@@ -18,33 +18,28 @@ type Result<T> = std::result::Result<T, Error>;
 #[derive(Default)]
 pub struct App {
     app_name: String,
-}
-
-impl App {
-    pub fn new(app_name: String) -> Self {
-        Self { app_name }
-    }
-    pub fn run(&self) -> Result<()> {
-        let eloop = EventLoop::new()?;
-        eloop.set_control_flow(ControlFlow::Poll);
-
-        let mut inner = Inner {
-            app_name: self.app_name.clone(),
-            ..Default::default()
-        };
-        eloop.run_app(&mut inner)?;
-        Ok(())
-    }
-}
-
-#[derive(Default)]
-struct Inner {
-    app_name: String,
     win: Option<winit::window::Window>,
     renderer: Option<Renderer<DefaultBackend>>,
 }
 
-impl ApplicationHandler for Inner {
+impl App {
+    pub fn new(app_name: String) -> Self {
+        Self {
+            app_name,
+            win: None,
+            renderer: None,
+        }
+    }
+    pub fn run(&mut self) -> Result<()> {
+        let eloop = EventLoop::new()?;
+        eloop.set_control_flow(ControlFlow::Poll);
+
+        eloop.run_app(self)?;
+        Ok(())
+    }
+}
+
+impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let win = event_loop
             .create_window(Window::default_attributes())

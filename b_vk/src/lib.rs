@@ -560,37 +560,37 @@ impl Backend for VkBackend {
                 })
                 .collect();
             let device_memory_properties = instance.get_physical_device_memory_properties(pdevice);
-            let depth_image_create_info = vk::ImageCreateInfo::default()
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(vk::Format::D16_UNORM)
-                .extent(surface_resolution.into())
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+            // let depth_image_create_info = vk::ImageCreateInfo::default()
+            //     .image_type(vk::ImageType::TYPE_2D)
+            //     .format(vk::Format::D16_UNORM)
+            //     .extent(surface_resolution.into())
+            //     .mip_levels(1)
+            //     .array_layers(1)
+            //     .samples(vk::SampleCountFlags::TYPE_1)
+            //     .tiling(vk::ImageTiling::OPTIMAL)
+            //     .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+            //     .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-            let depth_image = device.create_image(&depth_image_create_info, None).unwrap();
-            let depth_image_memory_req = device.get_image_memory_requirements(depth_image);
-            let depth_image_memory_index = find_memorytype_index(
-                &depth_image_memory_req,
-                &device_memory_properties,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            )
-            .expect("Unable to find suitable memory index for depth image.");
-
-            let depth_image_allocate_info = vk::MemoryAllocateInfo::default()
-                .allocation_size(depth_image_memory_req.size)
-                .memory_type_index(depth_image_memory_index);
-
-            let depth_image_memory = device
-                .allocate_memory(&depth_image_allocate_info, None)
-                .unwrap();
-
-            device
-                .bind_image_memory(depth_image, depth_image_memory, 0)
-                .expect("Unable to bind depth image memory");
+            // let depth_image = device.create_image(&depth_image_create_info, None).unwrap();
+            // let depth_image_memory_req = device.get_image_memory_requirements(depth_image);
+            // let depth_image_memory_index = find_memorytype_index(
+            //     &depth_image_memory_req,
+            //     &device_memory_properties,
+            //     vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            // )
+            // .expect("Unable to find suitable memory index for depth image.");
+            //
+            // let depth_image_allocate_info = vk::MemoryAllocateInfo::default()
+            //     .allocation_size(depth_image_memory_req.size)
+            //     .memory_type_index(depth_image_memory_index);
+            //
+            // let depth_image_memory = device
+            //     .allocate_memory(&depth_image_allocate_info, None)
+            //     .unwrap();
+            //
+            // device
+            //     .bind_image_memory(depth_image, depth_image_memory, 0)
+            //     .expect("Unable to bind depth image memory");
 
             let fence_create_info =
                 vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
@@ -602,41 +602,41 @@ impl Backend for VkBackend {
                 .create_fence(&fence_create_info, None)
                 .expect("Create fence failed.");
 
-            record_submit_commandbuffer(
-                &device,
-                setup_command_buffer,
-                setup_commands_reuse_fence,
-                present_queue,
-                &[],
-                &[],
-                &[],
-                |device, setup_command_buffer| {
-                    let layout_transition_barriers = vk::ImageMemoryBarrier::default()
-                        .image(depth_image)
-                        .dst_access_mask(
-                            vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-                                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                        )
-                        .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .subresource_range(
-                            vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                                .layer_count(1)
-                                .level_count(1),
-                        );
-
-                    device.cmd_pipeline_barrier(
-                        setup_command_buffer,
-                        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                        vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                        vk::DependencyFlags::empty(),
-                        &[],
-                        &[],
-                        &[layout_transition_barriers],
-                    );
-                },
-            );
+            // record_submit_commandbuffer(
+            //     &device,
+            //     setup_command_buffer,
+            //     setup_commands_reuse_fence,
+            //     present_queue,
+            //     &[],
+            //     &[],
+            //     &[],
+            //     |device, setup_command_buffer| {
+            //         let layout_transition_barriers = vk::ImageMemoryBarrier::default()
+            //             .image(depth_image)
+            //             .dst_access_mask(
+            //                 vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+            //                     | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            //             )
+            //             .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+            //             .old_layout(vk::ImageLayout::UNDEFINED)
+            //             .subresource_range(
+            //                 vk::ImageSubresourceRange::default()
+            //                     .aspect_mask(vk::ImageAspectFlags::DEPTH)
+            //                     .layer_count(1)
+            //                     .level_count(1),
+            //             );
+            //
+            //         device.cmd_pipeline_barrier(
+            //             setup_command_buffer,
+            //             vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            //             vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+            //             vk::DependencyFlags::empty(),
+            //             &[],
+            //             &[],
+            //             &[layout_transition_barriers],
+            //         );
+            //     },
+            // );
 
             let semaphore_create_info = vk::SemaphoreCreateInfo::default();
 
@@ -712,10 +712,6 @@ impl Drop for VkBackend {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().unwrap();
-            // self.device
-            //     .destroy_semaphore(self.present_complete_semaphore, None);
-            // self.device
-            //     .destroy_semaphore(self.rendering_complete_semaphore, None);
             self.device
                 .destroy_fence(self.draw_commands_reuse_fence, None);
             self.device
@@ -732,6 +728,10 @@ impl Drop for VkBackend {
             for &image_view in self.present_image_views.iter() {
                 self.device.destroy_image_view(image_view, None);
             }
+            for &framebuffer in self.framebuffers.iter() {
+                self.device.destroy_framebuffer(framebuffer, None);
+            }
+            self.device.destroy_render_pass(self.render_pass, None);
             self.device.destroy_command_pool(self.pool, None);
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
