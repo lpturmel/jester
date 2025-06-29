@@ -75,6 +75,10 @@ impl ApplicationHandler for Inner {
                 r.end_frame();
                 self.win.as_ref().unwrap().request_redraw();
             }
+            WindowEvent::Resized(size) => {
+                let Some(r) = &mut self.renderer else { return };
+                r.handle_resize(size);
+            }
             _ => (),
         }
     }

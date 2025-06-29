@@ -54,16 +54,153 @@ pub struct VkBackend {
     pub in_flight_fence: [vk::Fence; Self::MAX_FRAMES_IN_FLIGHT],
 
     pub frame_idx: usize,
+
+    // misc
+    pub swapchain_rebuild: bool,
 }
 
 impl VkBackend {
     const MAX_FRAMES_IN_FLIGHT: usize = 2;
+    fn create_swapchain(
+        &mut self,
+        window_width: u32,
+        window_height: u32,
+    ) -> Result<(), vk::Result> {
+        unsafe {
+            let caps = self
+                .surface_loader
+                .get_physical_device_surface_capabilities(self.pdevice, self.surface)?;
+
+            let formats = self
+                .surface_loader
+                .get_physical_device_surface_formats(self.pdevice, self.surface)?;
+            self.surface_format = formats[0];
+
+            let present_modes = self
+                .surface_loader
+                .get_physical_device_surface_present_modes(self.pdevice, self.surface)?;
+            let present_mode = present_modes
+                .iter()
+                .cloned()
+                .find(|m| *m == vk::PresentModeKHR::MAILBOX)
+                .unwrap_or(vk::PresentModeKHR::FIFO);
+
+            let desired_image_count =
+                (caps.min_image_count + 1).min(caps.max_image_count.max(caps.min_image_count + 1));
+
+            self.surface_resolution = match caps.current_extent.width {
+                u32::MAX => vk::Extent2D {
+                    width: window_width,
+                    height: window_height,
+                },
+                _ => caps.current_extent,
+            };
+
+            for &fb in &self.framebuffers {
+                self.device.destroy_framebuffer(fb, None);
+            }
+            for &view in &self.present_image_views {
+                self.device.destroy_image_view(view, None);
+            }
+            for &sem in &self.render_finished {
+                self.device.destroy_semaphore(sem, None);
+            }
+            if self.swapchain != vk::SwapchainKHR::null() {
+                self.swapchain_loader
+                    .destroy_swapchain(self.swapchain, None);
+            }
+
+            let swap_info = vk::SwapchainCreateInfoKHR::default()
+                .surface(self.surface)
+                .min_image_count(desired_image_count)
+                .image_color_space(self.surface_format.color_space)
+                .image_format(self.surface_format.format)
+                .image_extent(self.surface_resolution)
+                .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+                .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .pre_transform(
+                    if caps
+                        .supported_transforms
+                        .contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
+                    {
+                        vk::SurfaceTransformFlagsKHR::IDENTITY
+                    } else {
+                        caps.current_transform
+                    },
+                )
+                .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+                .present_mode(present_mode)
+                .clipped(true)
+                .image_array_layers(1);
+
+            self.swapchain = self.swapchain_loader.create_swapchain(&swap_info, None)?;
+
+            self.present_images = self.swapchain_loader.get_swapchain_images(self.swapchain)?;
+            self.present_image_views = self
+                .present_images
+                .iter()
+                .map(|&img| {
+                    let view_info = vk::ImageViewCreateInfo::default()
+                        .image(img)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(self.surface_format.format)
+                        .subresource_range(
+                            vk::ImageSubresourceRange::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .layer_count(1)
+                                .level_count(1),
+                        );
+                    self.device.create_image_view(&view_info, None)
+                })
+                .collect::<Result<_, _>>()?;
+
+            let sem_info = vk::SemaphoreCreateInfo::default();
+            self.render_finished = self
+                .present_images
+                .iter()
+                .map(|_| self.device.create_semaphore(&sem_info, None))
+                .collect::<Result<_, _>>()?;
+
+            self.framebuffers = self
+                .present_image_views
+                .iter()
+                .map(|&view| {
+                    let fb_info = vk::FramebufferCreateInfo::default()
+                        .render_pass(self.render_pass)
+                        .attachments(std::slice::from_ref(&view))
+                        .width(self.surface_resolution.width)
+                        .height(self.surface_resolution.height)
+                        .layers(1);
+                    self.device.create_framebuffer(&fb_info, None)
+                })
+                .collect::<Result<_, _>>()?;
+
+            Ok(())
+        }
+    }
 }
 
 impl Backend for VkBackend {
     type Error = vk::Result;
 
+    fn handle_resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        if size.width == self.surface_resolution.width
+            && size.height == self.surface_resolution.height
+        {
+            return;
+        }
+        self.swapchain_rebuild = true;
+    }
+
     fn begin_frame(&mut self) {
+        if self.swapchain_rebuild {
+            unsafe { self.device.device_wait_idle() }.unwrap();
+            let _ = self.create_swapchain(
+                self.surface_resolution.width,
+                self.surface_resolution.height,
+            );
+            self.swapchain_rebuild = false;
+        }
         let fi = self.frame_idx;
         let cmd = self.cmds[fi];
         unsafe {
@@ -565,6 +702,7 @@ impl Backend for VkBackend {
                 in_flight_fence,
                 frame_idx: 0,
                 cmds: cmd,
+                swapchain_rebuild: false,
             })
         }
     }
