@@ -13,5 +13,6 @@ jester_core = { path = "../jester_core" }
 b_vk = { path = "../b_vk", optional = true }
 
 [features]
-default = ["vulkan"]
+default = ["vulkan", "debug"]
+debug = ["b_vk/debug"]
 vulkan = ["dep:b_vk"]

@@ -10,7 +10,6 @@ use ash::{
 };
 use jester_core::{Backend, SpriteBatch};
 use std::{borrow::Cow, ffi, os::raw::c_char};
-use tracing::info;
 use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle},
     window::Window,
@@ -22,7 +21,9 @@ pub struct VkBackend {
     pub device: Device,
     pub surface_loader: surface::Instance,
     pub swapchain_loader: swapchain::Device,
+    #[cfg(feature = "debug")]
     pub debug_utils_loader: debug_utils::Instance,
+    #[cfg(feature = "debug")]
     pub debug_call_back: vk::DebugUtilsMessengerEXT,
 
     pub pdevice: vk::PhysicalDevice,
@@ -39,25 +40,112 @@ pub struct VkBackend {
     pub present_image_views: Vec<vk::ImageView>,
 
     pub pool: vk::CommandPool,
-    pub draw_command_buffer: vk::CommandBuffer,
     pub setup_command_buffer: vk::CommandBuffer,
-
-    pub present_complete_semaphore: vk::Semaphore,
-    pub rendering_complete_semaphore: vk::Semaphore,
+    pub cmds: Vec<vk::CommandBuffer>,
 
     pub draw_commands_reuse_fence: vk::Fence,
     pub setup_commands_reuse_fence: vk::Fence,
+
+    pub render_pass: vk::RenderPass,
+    pub framebuffers: Vec<vk::Framebuffer>,
+    pub current_img: usize,
+    pub image_available: [vk::Semaphore; Self::MAX_FRAMES_IN_FLIGHT],
+    pub render_finished: Vec<vk::Semaphore>,
+    pub in_flight_fence: [vk::Fence; Self::MAX_FRAMES_IN_FLIGHT],
+
+    pub frame_idx: usize,
+}
+
+impl VkBackend {
+    const MAX_FRAMES_IN_FLIGHT: usize = 2;
 }
 
 impl Backend for VkBackend {
-    type Error = String;
+    type Error = vk::Result;
 
     fn begin_frame(&mut self) {
-        info!("Begin frame");
+        let fi = self.frame_idx;
+        let cmd = self.cmds[fi];
+        unsafe {
+            self.device
+                .wait_for_fences(&[self.in_flight_fence[fi]], true, u64::MAX)
+                .expect("Wait for fence failed.");
+            self.device
+                .reset_fences(&[self.in_flight_fence[fi]])
+                .expect("Reset fences failed.");
+        }
+
+        let (img_index, _) = unsafe {
+            self.swapchain_loader.acquire_next_image(
+                self.swapchain,
+                u64::MAX,
+                self.image_available[fi],
+                vk::Fence::null(),
+            )
+        }
+        .unwrap();
+        self.current_img = img_index as usize;
+
+        unsafe {
+            self.device
+                .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
+                .unwrap();
+
+            let begin_info = vk::CommandBufferBeginInfo::default();
+            self.device.begin_command_buffer(cmd, &begin_info).unwrap();
+
+            let clear = vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.05, 0.05, 0.09, 1.0],
+                },
+            };
+            self.device.cmd_begin_render_pass(
+                cmd,
+                &vk::RenderPassBeginInfo::default()
+                    .render_pass(self.render_pass)
+                    .framebuffer(self.framebuffers[self.current_img])
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: self.surface_resolution,
+                    })
+                    .clear_values(std::slice::from_ref(&clear)),
+                vk::SubpassContents::INLINE,
+            );
+
+            self.device.cmd_end_render_pass(cmd);
+            self.device.end_command_buffer(cmd).unwrap();
+        }
     }
 
     fn end_frame(&mut self) {
-        info!("End frame");
+        let fi = self.frame_idx;
+        let img = self.current_img;
+        let cmd = self.cmds[fi];
+        let rf_sema = self.render_finished[img];
+
+        let submit = vk::SubmitInfo::default()
+            .wait_semaphores(std::slice::from_ref(&self.image_available[fi]))
+            .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
+            .command_buffers(std::slice::from_ref(&cmd))
+            .signal_semaphores(std::slice::from_ref(&rf_sema));
+
+        unsafe {
+            self.device
+                .queue_submit(self.present_queue, &[submit], self.in_flight_fence[fi])
+                .expect("queue submit failed.");
+
+            let img_u32 = img as u32;
+            let present = vk::PresentInfoKHR::default()
+                .wait_semaphores(std::slice::from_ref(&rf_sema))
+                .swapchains(std::slice::from_ref(&self.swapchain))
+                .image_indices(std::slice::from_ref(&img_u32));
+
+            self.swapchain_loader
+                .queue_present(self.present_queue, &present)
+                .expect("present failed.");
+        }
+
+        self.frame_idx = (fi + 1) % VkBackend::MAX_FRAMES_IN_FLIGHT;
     }
 
     fn draw_sprites(&mut self, batch: &SpriteBatch) {
@@ -86,6 +174,7 @@ impl Backend for VkBackend {
                 enumerate_required_extensions(display_raw_handle)
                     .unwrap()
                     .to_vec();
+            #[cfg(feature = "debug")]
             extension_names.push(debug_utils::NAME.as_ptr());
             extension_names.push(ash::khr::surface::NAME.as_ptr());
             #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -102,16 +191,21 @@ impl Backend for VkBackend {
                 vk::InstanceCreateFlags::default()
             };
 
-            let layer_names = [c"VK_LAYER_KHRONOS_validation"];
-            let layers_names_raw: Vec<*const c_char> = layer_names
-                .iter()
-                .map(|raw_name| raw_name.as_ptr())
-                .collect();
+            #[cfg(feature = "debug")]
+            let layers_names_raw = {
+                let layer_names = [c"VK_LAYER_KHRONOS_validation"];
+                let layers_names_raw: Vec<*const c_char> = layer_names
+                    .iter()
+                    .map(|raw_name| raw_name.as_ptr())
+                    .collect();
+                layers_names_raw
+            };
             let create_info = vk::InstanceCreateInfo::default()
                 .application_info(&app_info)
-                .enabled_layer_names(&layers_names_raw)
                 .enabled_extension_names(&extension_names)
                 .flags(create_flags);
+            #[cfg(feature = "debug")]
+            let create_info = create_info.enabled_layer_names(&layers_names_raw);
 
             let instance: Instance = entry
                 .create_instance(&create_info, None)
@@ -130,7 +224,9 @@ impl Backend for VkBackend {
                 )
                 .pfn_user_callback(Some(vulkan_debug_callback));
 
+            #[cfg(feature = "debug")]
             let debug_utils_loader = debug_utils::Instance::new(&entry, &instance);
+            #[cfg(feature = "debug")]
             let debug_call_back = debug_utils_loader
                 .create_debug_utils_messenger(&debug_info, None)
                 .unwrap();
@@ -203,6 +299,29 @@ impl Backend for VkBackend {
                 .get_physical_device_surface_formats(pdevice, surface)
                 .unwrap()[0];
 
+            let color_attach = vk::AttachmentDescription::default()
+                .format(surface_format.format)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+
+            let color_ref = vk::AttachmentReference {
+                attachment: 0,
+                layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            };
+
+            let subpass = vk::SubpassDescription::default()
+                .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+                .color_attachments(std::slice::from_ref(&color_ref));
+
+            let rp_info = vk::RenderPassCreateInfo::default()
+                .attachments(std::slice::from_ref(&color_attach))
+                .subpasses(std::slice::from_ref(&subpass));
+
+            let render_pass = device.create_render_pass(&rp_info, None)?;
+
             let surface_capabilities = surface_loader
                 .get_physical_device_surface_capabilities(pdevice, surface)
                 .unwrap();
@@ -261,16 +380,23 @@ impl Backend for VkBackend {
 
             let pool = device.create_command_pool(&pool_create_info, None).unwrap();
 
-            let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-                .command_buffer_count(2)
+            let setup_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
+                .command_buffer_count(1)
                 .command_pool(pool)
                 .level(vk::CommandBufferLevel::PRIMARY);
 
             let command_buffers = device
-                .allocate_command_buffers(&command_buffer_allocate_info)
+                .allocate_command_buffers(&setup_buffer_allocate_info)
                 .unwrap();
             let setup_command_buffer = command_buffers[0];
-            let draw_command_buffer = command_buffers[1];
+
+            let cmd_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
+                .command_buffer_count(VkBackend::MAX_FRAMES_IN_FLIGHT as u32)
+                .command_pool(pool)
+                .level(vk::CommandBufferLevel::PRIMARY);
+            let cmd = device
+                .allocate_command_buffers(&cmd_buffer_allocate_info)
+                .unwrap();
 
             let present_images = swapchain_loader.get_swapchain_images(swapchain).unwrap();
             let present_image_views: Vec<vk::ImageView> = present_images
@@ -377,12 +503,33 @@ impl Backend for VkBackend {
 
             let semaphore_create_info = vk::SemaphoreCreateInfo::default();
 
-            let present_complete_semaphore = device
-                .create_semaphore(&semaphore_create_info, None)
-                .unwrap();
-            let rendering_complete_semaphore = device
-                .create_semaphore(&semaphore_create_info, None)
-                .unwrap();
+            let framebuffers: Vec<vk::Framebuffer> = present_image_views
+                .iter()
+                .map(|&view| {
+                    let fb_info = vk::FramebufferCreateInfo::default()
+                        .render_pass(render_pass)
+                        .attachments(std::slice::from_ref(&view))
+                        .width(surface_resolution.width)
+                        .height(surface_resolution.height)
+                        .layers(1);
+                    device.create_framebuffer(&fb_info, None)
+                })
+                .collect::<Result<_, _>>()?;
+
+            let mut image_available = [vk::Semaphore::null(); VkBackend::MAX_FRAMES_IN_FLIGHT];
+            let render_finished = present_images
+                .iter()
+                .map(|_| device.create_semaphore(&semaphore_create_info, None))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut in_flight_fence = [vk::Fence::null(); VkBackend::MAX_FRAMES_IN_FLIGHT];
+
+            for i in 0..VkBackend::MAX_FRAMES_IN_FLIGHT {
+                image_available[i] = device.create_semaphore(&semaphore_create_info, None)?;
+                in_flight_fence[i] = device.create_fence(
+                    &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
+                    None,
+                )?;
+            }
 
             Ok(Self {
                 entry,
@@ -400,15 +547,24 @@ impl Backend for VkBackend {
                 present_images,
                 present_image_views,
                 pool,
-                draw_command_buffer,
                 setup_command_buffer,
-                present_complete_semaphore,
-                rendering_complete_semaphore,
+                // present_complete_semaphore,
+                // rendering_complete_semaphore,
                 draw_commands_reuse_fence,
                 setup_commands_reuse_fence,
                 surface,
+                #[cfg(feature = "debug")]
                 debug_call_back,
+                #[cfg(feature = "debug")]
                 debug_utils_loader,
+                render_pass,
+                framebuffers,
+                current_img: 0,
+                image_available,
+                render_finished,
+                in_flight_fence,
+                frame_idx: 0,
+                cmds: cmd,
             })
         }
     }
@@ -418,14 +574,23 @@ impl Drop for VkBackend {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().unwrap();
-            self.device
-                .destroy_semaphore(self.present_complete_semaphore, None);
-            self.device
-                .destroy_semaphore(self.rendering_complete_semaphore, None);
+            // self.device
+            //     .destroy_semaphore(self.present_complete_semaphore, None);
+            // self.device
+            //     .destroy_semaphore(self.rendering_complete_semaphore, None);
             self.device
                 .destroy_fence(self.draw_commands_reuse_fence, None);
             self.device
                 .destroy_fence(self.setup_commands_reuse_fence, None);
+            for &semaphore in self.image_available.iter() {
+                self.device.destroy_semaphore(semaphore, None);
+            }
+            for &semaphore in self.render_finished.iter() {
+                self.device.destroy_semaphore(semaphore, None);
+            }
+            for &fence in self.in_flight_fence.iter() {
+                self.device.destroy_fence(fence, None);
+            }
             for &image_view in self.present_image_views.iter() {
                 self.device.destroy_image_view(image_view, None);
             }

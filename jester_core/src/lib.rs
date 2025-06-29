@@ -67,6 +67,7 @@ impl ApplicationHandler for Inner {
                 // You only need to call this if you've determined that you need to redraw in
                 // applications which do not always need to. Applications that redraw continuously
                 // can render here instead.
+
                 self.win.as_ref().unwrap().request_redraw();
             }
             _ => (),
