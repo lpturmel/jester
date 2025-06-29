@@ -40,12 +40,11 @@ pub struct VkBackend {
     pub present_image_views: Vec<vk::ImageView>,
 
     pub pool: vk::CommandPool,
-    pub setup_command_buffer: vk::CommandBuffer,
+    // pub setup_command_buffer: vk::CommandBuffer,
     pub cmds: Vec<vk::CommandBuffer>,
 
-    pub draw_commands_reuse_fence: vk::Fence,
-    pub setup_commands_reuse_fence: vk::Fence,
-
+    // pub draw_commands_reuse_fence: vk::Fence,
+    // pub setup_commands_reuse_fence: vk::Fence,
     pub render_pass: vk::RenderPass,
     pub framebuffers: Vec<vk::Framebuffer>,
     pub current_img: usize,
@@ -517,15 +516,15 @@ impl Backend for VkBackend {
 
             let pool = device.create_command_pool(&pool_create_info, None).unwrap();
 
-            let setup_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-                .command_buffer_count(1)
-                .command_pool(pool)
-                .level(vk::CommandBufferLevel::PRIMARY);
+            // let setup_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
+            //     .command_buffer_count(1)
+            //     .command_pool(pool)
+            //     .level(vk::CommandBufferLevel::PRIMARY);
 
-            let command_buffers = device
-                .allocate_command_buffers(&setup_buffer_allocate_info)
-                .unwrap();
-            let setup_command_buffer = command_buffers[0];
+            // let command_buffers = device
+            //     .allocate_command_buffers(&setup_buffer_allocate_info)
+            //     .unwrap();
+            // let setup_command_buffer = command_buffers[0];
 
             let cmd_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
                 .command_buffer_count(VkBackend::MAX_FRAMES_IN_FLIGHT as u32)
@@ -592,15 +591,15 @@ impl Backend for VkBackend {
             //     .bind_image_memory(depth_image, depth_image_memory, 0)
             //     .expect("Unable to bind depth image memory");
 
-            let fence_create_info =
-                vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+            // let fence_create_info =
+            //     vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
 
-            let draw_commands_reuse_fence = device
-                .create_fence(&fence_create_info, None)
-                .expect("Create fence failed.");
-            let setup_commands_reuse_fence = device
-                .create_fence(&fence_create_info, None)
-                .expect("Create fence failed.");
+            // let draw_commands_reuse_fence = device
+            //     .create_fence(&fence_create_info, None)
+            //     .expect("Create fence failed.");
+            // let setup_commands_reuse_fence = device
+            //     .create_fence(&fence_create_info, None)
+            //     .expect("Create fence failed.");
 
             // record_submit_commandbuffer(
             //     &device,
@@ -684,11 +683,11 @@ impl Backend for VkBackend {
                 present_images,
                 present_image_views,
                 pool,
-                setup_command_buffer,
+                // setup_command_buffer,
                 // present_complete_semaphore,
                 // rendering_complete_semaphore,
-                draw_commands_reuse_fence,
-                setup_commands_reuse_fence,
+                // draw_commands_reuse_fence,
+                // setup_commands_reuse_fence,
                 surface,
                 #[cfg(feature = "debug")]
                 debug_call_back,
@@ -712,10 +711,10 @@ impl Drop for VkBackend {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().unwrap();
-            self.device
-                .destroy_fence(self.draw_commands_reuse_fence, None);
-            self.device
-                .destroy_fence(self.setup_commands_reuse_fence, None);
+            // self.device
+            //     .destroy_fence(self.draw_commands_reuse_fence, None);
+            // self.device
+            //     .destroy_fence(self.setup_commands_reuse_fence, None);
             for &semaphore in self.image_available.iter() {
                 self.device.destroy_semaphore(semaphore, None);
             }
