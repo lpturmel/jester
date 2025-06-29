@@ -1,0 +1,17 @@
+[package]
+name = "jester"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ash.workspace = true
+thiserror = "2.0.12"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+winit.workspace = true
+jester_core = { path = "../jester_core" }
+b_vk = { path = "../b_vk", optional = true }
+
+[features]
+default = ["vulkan"]
+vulkan = ["dep:b_vk"]

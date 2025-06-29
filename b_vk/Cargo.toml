@@ -1,0 +1,13 @@
+[package]
+name = "b_vk"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ash.workspace = true
+tracing.workspace = true
+winit.workspace = true
+jester_core = { path = "../jester_core" }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+raw-window-metal = "0.4"

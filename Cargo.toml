@@ -1,0 +1,8 @@
+[workspace]
+members = [ "b_vk","jester", "jester_core"]
+
+[workspace.dependencies]
+ash = "0.38.0"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+winit = "0.30.11"
