@@ -50,7 +50,7 @@ impl ApplicationHandler for Inner {
             .create_window(Window::default_attributes())
             .unwrap();
         info!("Creating renderer");
-        let rend = Renderer::<DefaultBackend>::new(&self.app_name, &win, &win)
+        let rend = Renderer::<DefaultBackend>::new(&self.app_name, &win)
             .expect("Failed to create renderer");
         self.win = Some(win);
         self.renderer = Some(rend);

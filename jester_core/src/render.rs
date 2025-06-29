@@ -1,18 +1,14 @@
 use crate::sprite::SpriteBatch;
-use winit::raw_window_handle;
+use winit::window::Window;
 
 pub struct Renderer<B: Backend> {
     backend: B,
 }
 
 impl<B: Backend> Renderer<B> {
-    pub fn new(
-        app_name: &str,
-        window: &impl raw_window_handle::HasWindowHandle,
-        display: &impl raw_window_handle::HasDisplayHandle,
-    ) -> Result<Self, B::Error> {
+    pub fn new(app_name: &str, window: &Window) -> Result<Self, B::Error> {
         assert!(!app_name.is_empty());
-        let backend = B::init(app_name, window, display)?;
+        let backend = B::init(app_name, window)?;
         Ok(Self { backend })
     }
 
@@ -30,11 +26,7 @@ impl<B: Backend> Renderer<B> {
 pub trait Backend: Sized {
     type Error;
 
-    fn init(
-        app_name: &str,
-        window: &impl raw_window_handle::HasWindowHandle,
-        display: &impl raw_window_handle::HasDisplayHandle,
-    ) -> std::result::Result<Self, Self::Error>;
+    fn init(app_name: &str, window: &Window) -> std::result::Result<Self, Self::Error>;
 
     fn begin_frame(&mut self);
     fn draw_sprites(&mut self, batch: &SpriteBatch);
