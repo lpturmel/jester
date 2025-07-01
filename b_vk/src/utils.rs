@@ -4,6 +4,7 @@ use ash::{
     prelude::VkResult,
     vk, Device, Entry, Instance,
 };
+use image::ImageBuffer;
 use std::{borrow::Cow, ffi, os::raw::c_char};
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
@@ -241,4 +242,195 @@ pub fn enumerate_required_extensions(
     };
 
     Ok(extensions)
+}
+
+pub fn load_texture(
+    device: &Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    cmd_pool: vk::CommandPool,
+    queue: vk::Queue,
+    img: ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+) -> (vk::Image, vk::DeviceMemory, vk::ImageView, vk::Sampler) {
+    let (w, h) = img.dimensions();
+    let img_size = (w * h * 4) as vk::DeviceSize;
+
+    let (stage_buf, stage_mem) = crate::shaders::create_buffer(
+        device,
+        mem_props,
+        img_size,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    );
+    unsafe {
+        let ptr = device
+            .map_memory(stage_mem, 0, img_size, vk::MemoryMapFlags::empty())
+            .unwrap();
+        std::ptr::copy_nonoverlapping(img.as_ptr(), ptr as *mut u8, img.len());
+        device.unmap_memory(stage_mem);
+    }
+
+    let img_create = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::R8G8B8A8_UNORM)
+        .extent(vk::Extent3D {
+            width: w,
+            height: h,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+
+    let image = unsafe { device.create_image(&img_create, None).unwrap() };
+    let req = unsafe { device.get_image_memory_requirements(image) };
+    let ty =
+        crate::utils::find_memorytype_index(&req, mem_props, vk::MemoryPropertyFlags::DEVICE_LOCAL)
+            .unwrap();
+    let alloc = vk::MemoryAllocateInfo::default()
+        .allocation_size(req.size)
+        .memory_type_index(ty);
+    let image_mem = unsafe { device.allocate_memory(&alloc, None).unwrap() };
+    unsafe { device.bind_image_memory(image, image_mem, 0).unwrap() };
+
+    let tmp_cmd = unsafe {
+        device
+            .allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(cmd_pool)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )
+            .unwrap()[0]
+    };
+    let tmp_fence = unsafe {
+        device
+            .create_fence(
+                &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
+                None,
+            )
+            .unwrap()
+    };
+
+    record_submit_commandbuffer(
+        device,
+        tmp_cmd,
+        tmp_fence,
+        queue,
+        &[],
+        &[],
+        &[],
+        |d, c| unsafe {
+            let barrier0 = vk::ImageMemoryBarrier::default()
+                .image(image)
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .level_count(1)
+                        .layer_count(1),
+                );
+            d.cmd_pipeline_barrier(
+                c,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier0],
+            );
+
+            let region = vk::BufferImageCopy::default()
+                .buffer_offset(0)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .layer_count(1),
+                )
+                .image_extent(vk::Extent3D {
+                    width: w,
+                    height: h,
+                    depth: 1,
+                });
+
+            d.cmd_copy_buffer_to_image(
+                c,
+                stage_buf,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                std::slice::from_ref(&region),
+            );
+
+            let barrier1 = vk::ImageMemoryBarrier::default()
+                .image(image)
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .level_count(1)
+                        .layer_count(1),
+                );
+            d.cmd_pipeline_barrier(
+                c,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier1],
+            );
+        },
+    );
+    unsafe {
+        device
+            .wait_for_fences(&[tmp_fence], true, u64::MAX)
+            .unwrap();
+        device.destroy_fence(tmp_fence, None);
+        device.free_command_buffers(cmd_pool, &[tmp_cmd]);
+        device.destroy_buffer(stage_buf, None);
+        device.free_memory(stage_mem, None);
+    }
+
+    let view = unsafe {
+        device
+            .create_image_view(
+                &vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(vk::Format::R8G8B8A8_UNORM)
+                    .subresource_range(
+                        vk::ImageSubresourceRange::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .level_count(1)
+                            .layer_count(1),
+                    ),
+                None,
+            )
+            .unwrap()
+    };
+    let sampler = unsafe {
+        device
+            .create_sampler(
+                &vk::SamplerCreateInfo::default()
+                    .min_filter(vk::Filter::LINEAR)
+                    .mag_filter(vk::Filter::LINEAR)
+                    .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+                    .address_mode_u(vk::SamplerAddressMode::REPEAT)
+                    .address_mode_v(vk::SamplerAddressMode::REPEAT)
+                    .max_lod(0.0),
+                None,
+            )
+            .unwrap()
+    };
+
+    (image, image_mem, view, sampler)
 }

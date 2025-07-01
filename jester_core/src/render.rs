@@ -1,5 +1,9 @@
-use crate::sprite::SpriteBatch;
+use crate::sprite::{SpriteBatch, TextureId};
+use image::{GenericImageView, ImageResult};
 use winit::window::Window;
+
+pub const MAX_SPRITES: usize = 10000;
+pub const MAX_TEXTURES: usize = 256;
 
 pub struct Renderer<B: Backend> {
     backend: B,
@@ -32,10 +36,23 @@ impl<B: Backend> Renderer<B> {
     pub fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
     }
+
+    pub fn load_texture_sync<P>(&mut self, path: P) -> ImageResult<TextureId>
+    where
+        P: AsRef<std::path::Path>,
+    {
+        let img = image::open(path)?.to_rgba8();
+        let (width, height) = img.dimensions();
+        let tex_id = self
+            .backend
+            .create_texture(width, height, &img)
+            .expect("Failed to create texture");
+        Ok(tex_id)
+    }
 }
 
 pub trait Backend: Sized {
-    type Error;
+    type Error: std::error::Error;
 
     fn init(app_name: &str, window: &Window) -> std::result::Result<Self, Self::Error>;
 
@@ -43,4 +60,11 @@ pub trait Backend: Sized {
     fn draw_sprites(&mut self, batch: &SpriteBatch);
     fn end_frame(&mut self);
     fn handle_resize(&mut self, _size: winit::dpi::PhysicalSize<u32>) {}
+
+    fn create_texture(
+        &mut self,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Result<TextureId, Self::Error>;
 }

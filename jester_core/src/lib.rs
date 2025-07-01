@@ -1,6 +1,6 @@
 pub use error::Error;
-pub use render::{Backend, Renderer};
-pub use sprite::{SpriteBatch, SpriteInstance};
+pub use render::{Backend, Renderer, MAX_SPRITES, MAX_TEXTURES};
+pub use sprite::{SpriteBatch, SpriteInstance, TextureId};
 
 mod error;
 mod render;

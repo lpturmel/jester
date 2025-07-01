@@ -5,8 +5,9 @@ edition = "2024"
 
 [dependencies]
 ash.workspace = true
-bytemuck = "1.23.1"
+bytemuck.workspace = true
 thiserror = "2.0.12"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 winit.workspace = true
+image.workspace = true
