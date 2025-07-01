@@ -435,6 +435,7 @@ name = "jester_core"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "bytemuck",
  "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",

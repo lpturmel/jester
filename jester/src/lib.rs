@@ -1,6 +1,6 @@
 #[cfg(feature = "vulkan")]
 pub use b_vk::VkBackend as DefaultBackend;
-use jester_core::{Error, Renderer};
+use jester_core::{Error, Renderer, SpriteBatch, SpriteInstance};
 use tracing::info;
 use winit::{
     application::ApplicationHandler,
@@ -20,6 +20,7 @@ pub struct App {
     app_name: String,
     win: Option<winit::window::Window>,
     renderer: Option<Renderer<DefaultBackend>>,
+    sprites: SpriteBatch,
 }
 
 impl App {
@@ -28,6 +29,14 @@ impl App {
             app_name,
             win: None,
             renderer: None,
+            sprites: SpriteBatch {
+                instances: Vec::from([SpriteInstance {
+                    pos_size: [-0.5, -0.5, 1.0, 1.0],
+                    uv: [0.0, 0.0, 1.0, 1.0],
+                    tex_id: 0,
+                    _pad: 0,
+                }]),
+            },
         }
     }
     pub fn run(&mut self) -> Result<()> {
@@ -42,7 +51,7 @@ impl App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let win = event_loop
-            .create_window(Window::default_attributes())
+            .create_window(Window::default_attributes().with_title(&self.app_name))
             .unwrap();
         info!("Creating renderer");
         let rend = Renderer::<DefaultBackend>::new(&self.app_name, &win)
@@ -67,6 +76,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 let Some(r) = &mut self.renderer else { return };
                 r.begin_frame();
+                r.draw_sprites(&self.sprites);
                 r.end_frame();
                 self.win.as_ref().unwrap().request_redraw();
             }

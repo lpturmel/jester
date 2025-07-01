@@ -1,6 +1,6 @@
 pub use error::Error;
 pub use render::{Backend, Renderer};
-pub use sprite::SpriteBatch;
+pub use sprite::{SpriteBatch, SpriteInstance};
 
 mod error;
 mod render;

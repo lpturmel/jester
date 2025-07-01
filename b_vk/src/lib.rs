@@ -1,19 +1,48 @@
+use self::utils::{
+    create_surface, enumerate_required_extensions, record_submit_commandbuffer,
+    vulkan_debug_callback,
+};
 use ash::{
-    ext::{debug_utils, metal_surface},
-    khr::{
-        android_surface, surface, swapchain, wayland_surface, win32_surface, xcb_surface,
-        xlib_surface,
-    },
-    prelude::VkResult,
+    ext::debug_utils,
+    khr::{surface, swapchain},
     vk::{self, API_VERSION_1_3},
     Device, Entry, Instance,
 };
-use jester_core::{Backend, SpriteBatch};
-use std::{borrow::Cow, ffi, os::raw::c_char};
+use jester_core::{Backend, SpriteBatch, SpriteInstance};
+use std::{ffi, os::raw::c_char};
+use tracing::info;
 use winit::{
-    raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle},
+    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
 };
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct QuadVertex {
+    pos: [f32; 2],
+    uv: [f32; 2],
+}
+
+const QUAD_VERTS: [QuadVertex; 4] = [
+    QuadVertex {
+        pos: [-0.5, -0.5],
+        uv: [0.0, 0.0],
+    },
+    QuadVertex {
+        pos: [0.5, -0.5],
+        uv: [1.0, 0.0],
+    },
+    QuadVertex {
+        pos: [-0.5, 0.5],
+        uv: [0.0, 1.0],
+    },
+    QuadVertex {
+        pos: [0.5, 0.5],
+        uv: [1.0, 1.0],
+    },
+];
+
+mod utils;
 
 pub struct VkBackend {
     pub entry: Entry,
@@ -40,11 +69,8 @@ pub struct VkBackend {
     pub present_image_views: Vec<vk::ImageView>,
 
     pub pool: vk::CommandPool,
-    // pub setup_command_buffer: vk::CommandBuffer,
     pub cmds: Vec<vk::CommandBuffer>,
 
-    // pub draw_commands_reuse_fence: vk::Fence,
-    // pub setup_commands_reuse_fence: vk::Fence,
     pub render_pass: vk::RenderPass,
     pub framebuffers: Vec<vk::Framebuffer>,
     pub current_img: usize,
@@ -56,10 +82,22 @@ pub struct VkBackend {
 
     // misc
     pub swapchain_rebuild: bool,
+
+    // pipeline
+    pub pipeline_layout: vk::PipelineLayout,
+    pub pipeline: vk::Pipeline,
+
+    pub quad_vbo: vk::Buffer,
+    pub quad_vbo_mem: vk::DeviceMemory,
+
+    pub instance_vbo: vk::Buffer,
+    pub instance_vbo_mem: vk::DeviceMemory,
 }
 
 impl VkBackend {
     const MAX_FRAMES_IN_FLIGHT: usize = 2;
+    const MAX_SPRITES: usize = 10000;
+
     fn create_swapchain(
         &mut self,
         window_width: u32,
@@ -230,6 +268,17 @@ impl Backend for VkBackend {
             let begin_info = vk::CommandBufferBeginInfo::default();
             self.device.begin_command_buffer(cmd, &begin_info).unwrap();
 
+            let vp = vk::Viewport::default()
+                .width(self.surface_resolution.width as f32)
+                .height(self.surface_resolution.height as f32)
+                .min_depth(0.0)
+                .max_depth(1.0);
+            let sc = vk::Rect2D::default().extent(self.surface_resolution);
+            self.device
+                .cmd_set_viewport(cmd, 0, std::slice::from_ref(&vp));
+            self.device
+                .cmd_set_scissor(cmd, 0, std::slice::from_ref(&sc));
+
             let clear = vk::ClearValue {
                 color: vk::ClearColorValue {
                     float32: [0.05, 0.05, 0.09, 1.0],
@@ -247,9 +296,6 @@ impl Backend for VkBackend {
                     .clear_values(std::slice::from_ref(&clear)),
                 vk::SubpassContents::INLINE,
             );
-
-            self.device.cmd_end_render_pass(cmd);
-            self.device.end_command_buffer(cmd).unwrap();
         }
     }
 
@@ -259,16 +305,23 @@ impl Backend for VkBackend {
         let cmd = self.cmds[fi];
         let rf_sema = self.render_finished[img];
 
-        let submit = vk::SubmitInfo::default()
-            .wait_semaphores(std::slice::from_ref(&self.image_available[fi]))
-            .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
-            .command_buffers(std::slice::from_ref(&cmd))
-            .signal_semaphores(std::slice::from_ref(&rf_sema));
-
         unsafe {
+            self.device.cmd_end_render_pass(cmd);
+            self.device.end_command_buffer(cmd).unwrap();
+
+            let submit = vk::SubmitInfo::default()
+                .wait_semaphores(std::slice::from_ref(&self.image_available[fi]))
+                .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
+                .command_buffers(std::slice::from_ref(&cmd))
+                .signal_semaphores(std::slice::from_ref(&rf_sema));
+
             self.device
-                .queue_submit(self.present_queue, &[submit], self.in_flight_fence[fi])
-                .expect("queue submit failed.");
+                .queue_submit(
+                    self.present_queue,
+                    std::slice::from_ref(&submit),
+                    self.in_flight_fence[fi],
+                )
+                .unwrap();
 
             let img_u32 = img as u32;
             let present = vk::PresentInfoKHR::default()
@@ -278,14 +331,47 @@ impl Backend for VkBackend {
 
             self.swapchain_loader
                 .queue_present(self.present_queue, &present)
-                .expect("present failed.");
+                .unwrap();
         }
 
-        self.frame_idx = (fi + 1) % VkBackend::MAX_FRAMES_IN_FLIGHT;
+        self.frame_idx = (fi + 1) % Self::MAX_FRAMES_IN_FLIGHT;
     }
 
     fn draw_sprites(&mut self, batch: &SpriteBatch) {
-        todo!()
+        if batch.instances.is_empty() {
+            return;
+        }
+        assert!(batch.instances.len() <= Self::MAX_SPRITES);
+        let map_size =
+            (batch.instances.len() * std::mem::size_of::<SpriteInstance>()) as vk::DeviceSize;
+        unsafe {
+            let ptr = self
+                .device
+                .map_memory(
+                    self.instance_vbo_mem,
+                    0,
+                    map_size,
+                    vk::MemoryMapFlags::empty(),
+                )
+                .unwrap() as *mut SpriteInstance;
+            ptr.copy_from_nonoverlapping(batch.instances.as_ptr(), batch.instances.len());
+            self.device.unmap_memory(self.instance_vbo_mem);
+        }
+
+        let cmd = self.cmds[self.frame_idx];
+
+        unsafe {
+            self.device
+                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+
+            let buffers = [self.quad_vbo, self.instance_vbo];
+            let offsets = [0, 0];
+            self.device
+                .cmd_bind_vertex_buffers(cmd, 0, &buffers, &offsets);
+
+            self.device
+                .cmd_draw(cmd, 4, batch.instances.len() as u32, 0, 0);
+        }
     }
 
     fn init(app_name: &str, window: &Window) -> Result<Self, Self::Error> {
@@ -516,16 +602,6 @@ impl Backend for VkBackend {
 
             let pool = device.create_command_pool(&pool_create_info, None).unwrap();
 
-            // let setup_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-            //     .command_buffer_count(1)
-            //     .command_pool(pool)
-            //     .level(vk::CommandBufferLevel::PRIMARY);
-
-            // let command_buffers = device
-            //     .allocate_command_buffers(&setup_buffer_allocate_info)
-            //     .unwrap();
-            // let setup_command_buffer = command_buffers[0];
-
             let cmd_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
                 .command_buffer_count(VkBackend::MAX_FRAMES_IN_FLIGHT as u32)
                 .command_pool(pool)
@@ -559,83 +635,6 @@ impl Backend for VkBackend {
                 })
                 .collect();
             let device_memory_properties = instance.get_physical_device_memory_properties(pdevice);
-            // let depth_image_create_info = vk::ImageCreateInfo::default()
-            //     .image_type(vk::ImageType::TYPE_2D)
-            //     .format(vk::Format::D16_UNORM)
-            //     .extent(surface_resolution.into())
-            //     .mip_levels(1)
-            //     .array_layers(1)
-            //     .samples(vk::SampleCountFlags::TYPE_1)
-            //     .tiling(vk::ImageTiling::OPTIMAL)
-            //     .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
-            //     .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-            // let depth_image = device.create_image(&depth_image_create_info, None).unwrap();
-            // let depth_image_memory_req = device.get_image_memory_requirements(depth_image);
-            // let depth_image_memory_index = find_memorytype_index(
-            //     &depth_image_memory_req,
-            //     &device_memory_properties,
-            //     vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            // )
-            // .expect("Unable to find suitable memory index for depth image.");
-            //
-            // let depth_image_allocate_info = vk::MemoryAllocateInfo::default()
-            //     .allocation_size(depth_image_memory_req.size)
-            //     .memory_type_index(depth_image_memory_index);
-            //
-            // let depth_image_memory = device
-            //     .allocate_memory(&depth_image_allocate_info, None)
-            //     .unwrap();
-            //
-            // device
-            //     .bind_image_memory(depth_image, depth_image_memory, 0)
-            //     .expect("Unable to bind depth image memory");
-
-            // let fence_create_info =
-            //     vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-
-            // let draw_commands_reuse_fence = device
-            //     .create_fence(&fence_create_info, None)
-            //     .expect("Create fence failed.");
-            // let setup_commands_reuse_fence = device
-            //     .create_fence(&fence_create_info, None)
-            //     .expect("Create fence failed.");
-
-            // record_submit_commandbuffer(
-            //     &device,
-            //     setup_command_buffer,
-            //     setup_commands_reuse_fence,
-            //     present_queue,
-            //     &[],
-            //     &[],
-            //     &[],
-            //     |device, setup_command_buffer| {
-            //         let layout_transition_barriers = vk::ImageMemoryBarrier::default()
-            //             .image(depth_image)
-            //             .dst_access_mask(
-            //                 vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-            //                     | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            //             )
-            //             .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-            //             .old_layout(vk::ImageLayout::UNDEFINED)
-            //             .subresource_range(
-            //                 vk::ImageSubresourceRange::default()
-            //                     .aspect_mask(vk::ImageAspectFlags::DEPTH)
-            //                     .layer_count(1)
-            //                     .level_count(1),
-            //             );
-            //
-            //         device.cmd_pipeline_barrier(
-            //             setup_command_buffer,
-            //             vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-            //             vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-            //             vk::DependencyFlags::empty(),
-            //             &[],
-            //             &[],
-            //             &[layout_transition_barriers],
-            //         );
-            //     },
-            // );
 
             let semaphore_create_info = vk::SemaphoreCreateInfo::default();
 
@@ -667,6 +666,196 @@ impl Backend for VkBackend {
                 )?;
             }
 
+            info!("Creating quad VBO");
+            let quad_size =
+                (std::mem::size_of::<QuadVertex>() * QUAD_VERTS.len()) as vk::DeviceSize;
+            let (quad_vbo, quad_vbo_mem) = shaders::create_buffer(
+                &device,
+                &device_memory_properties,
+                quad_size,
+                vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            );
+
+            info!("Creating quad staging buffer");
+            {
+                let (staging_buf, staging_mem) = shaders::create_buffer(
+                    &device,
+                    &device_memory_properties,
+                    quad_size,
+                    vk::BufferUsageFlags::TRANSFER_SRC,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                );
+
+                let ptr =
+                    device.map_memory(staging_mem, 0, quad_size, vk::MemoryMapFlags::empty())?
+                        as *mut QuadVertex;
+                ptr.copy_from_nonoverlapping(QUAD_VERTS.as_ptr(), QUAD_VERTS.len());
+                device.unmap_memory(staging_mem);
+
+                let alloc = vk::CommandBufferAllocateInfo::default()
+                    .command_pool(pool)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1);
+                let tmp_cmd = device.allocate_command_buffers(&alloc)?[0];
+                let tmp_fence = device.create_fence(
+                    &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
+                    None,
+                )?;
+
+                let region = vk::BufferCopy::default().size(quad_size);
+                record_submit_commandbuffer(
+                    &device,
+                    tmp_cmd,
+                    tmp_fence,
+                    present_queue,
+                    &[],
+                    &[],
+                    &[],
+                    |d, c| {
+                        d.cmd_copy_buffer(c, staging_buf, quad_vbo, std::slice::from_ref(&region));
+                    },
+                );
+                device.wait_for_fences(&[tmp_fence], true, u64::MAX)?;
+                device.destroy_fence(tmp_fence, None);
+                device.free_command_buffers(pool, &[tmp_cmd]);
+                device.destroy_buffer(staging_buf, None);
+                device.free_memory(staging_mem, None);
+            }
+            info!("Creating instance VBO");
+            let inst_size =
+                (std::mem::size_of::<SpriteInstance>() * Self::MAX_SPRITES) as vk::DeviceSize;
+            let (instance_vbo, instance_vbo_mem) = shaders::create_buffer(
+                &device,
+                &device_memory_properties,
+                inst_size,
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+
+            info!("Creating shader modules");
+            let vert_mod =
+                shaders::create_shader(&device, include_bytes!("shaders/sprite.vert.spv"));
+            let frag_mod =
+                shaders::create_shader(&device, include_bytes!("shaders/sprite.frag.spv"));
+
+            info!("Creating pipeline layout");
+            let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
+            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
+
+            let binding_descriptions = [
+                vk::VertexInputBindingDescription::default() // binding 0: quad verts
+                    .binding(0)
+                    .stride(std::mem::size_of::<QuadVertex>() as u32)
+                    .input_rate(vk::VertexInputRate::VERTEX),
+                vk::VertexInputBindingDescription::default() // binding 1: per instance
+                    .binding(1)
+                    .stride(std::mem::size_of::<SpriteInstance>() as u32)
+                    .input_rate(vk::VertexInputRate::INSTANCE),
+            ];
+
+            let attribute_descriptions = [
+                // binding 0
+                vk::VertexInputAttributeDescription::default()
+                    .binding(0)
+                    .location(0)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(0),
+                vk::VertexInputAttributeDescription::default()
+                    .binding(0)
+                    .location(1)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(8),
+                // binding 1
+                vk::VertexInputAttributeDescription::default()
+                    .binding(1)
+                    .location(2)
+                    .format(vk::Format::R32G32B32A32_SFLOAT)
+                    .offset(0),
+                vk::VertexInputAttributeDescription::default()
+                    .binding(1)
+                    .location(3)
+                    .format(vk::Format::R32G32B32A32_SFLOAT)
+                    .offset(16),
+                vk::VertexInputAttributeDescription::default()
+                    .binding(1)
+                    .location(4)
+                    .format(vk::Format::R32_UINT)
+                    .offset(32),
+            ];
+
+            let vertex_state = vk::PipelineVertexInputStateCreateInfo::default()
+                .vertex_binding_descriptions(&binding_descriptions)
+                .vertex_attribute_descriptions(&attribute_descriptions);
+
+            let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_STRIP)
+                .primitive_restart_enable(true);
+
+            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+                .viewport_count(1)
+                .scissor_count(1);
+
+            let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+            let dynamic_state =
+                vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+            let raster = vk::PipelineRasterizationStateCreateInfo::default()
+                .polygon_mode(vk::PolygonMode::FILL)
+                .cull_mode(vk::CullModeFlags::NONE)
+                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                .line_width(1.0);
+            let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+                .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            let colour_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+                .blend_enable(false)
+                .color_write_mask(
+                    vk::ColorComponentFlags::R
+                        | vk::ColorComponentFlags::G
+                        | vk::ColorComponentFlags::B
+                        | vk::ColorComponentFlags::A,
+                );
+            let colour_blend = vk::PipelineColorBlendStateCreateInfo::default()
+                .attachments(std::slice::from_ref(&colour_blend_attachment));
+
+            let shader_entry = std::ffi::CString::new("main").unwrap();
+            let stages = [
+                vk::PipelineShaderStageCreateInfo::default()
+                    .module(vert_mod)
+                    .name(&shader_entry)
+                    .stage(vk::ShaderStageFlags::VERTEX),
+                vk::PipelineShaderStageCreateInfo::default()
+                    .module(frag_mod)
+                    .name(&shader_entry)
+                    .stage(vk::ShaderStageFlags::FRAGMENT),
+            ];
+
+            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+                .stages(&stages)
+                .vertex_input_state(&vertex_state)
+                .input_assembly_state(&input_assembly)
+                .viewport_state(&viewport_state)
+                .dynamic_state(&dynamic_state)
+                .rasterization_state(&raster)
+                .multisample_state(&multisample)
+                .color_blend_state(&colour_blend)
+                .layout(pipeline_layout)
+                .render_pass(render_pass)
+                .subpass(0);
+
+            info!("Creating pipeline");
+            let pipeline = device
+                .create_graphics_pipelines(
+                    vk::PipelineCache::null(),
+                    std::slice::from_ref(&pipeline_info),
+                    None,
+                )
+                .map_err(|(_, e)| e)?[0];
+
+            info!("Destroying shader modules");
+            device.destroy_shader_module(vert_mod, None);
+            device.destroy_shader_module(frag_mod, None);
+
             Ok(Self {
                 entry,
                 instance,
@@ -683,11 +872,6 @@ impl Backend for VkBackend {
                 present_images,
                 present_image_views,
                 pool,
-                // setup_command_buffer,
-                // present_complete_semaphore,
-                // rendering_complete_semaphore,
-                // draw_commands_reuse_fence,
-                // setup_commands_reuse_fence,
                 surface,
                 #[cfg(feature = "debug")]
                 debug_call_back,
@@ -702,6 +886,12 @@ impl Backend for VkBackend {
                 frame_idx: 0,
                 cmds: cmd,
                 swapchain_rebuild: false,
+                pipeline,
+                pipeline_layout,
+                quad_vbo,
+                quad_vbo_mem,
+                instance_vbo,
+                instance_vbo_mem,
             })
         }
     }
@@ -711,10 +901,14 @@ impl Drop for VkBackend {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().unwrap();
-            // self.device
-            //     .destroy_fence(self.draw_commands_reuse_fence, None);
-            // self.device
-            //     .destroy_fence(self.setup_commands_reuse_fence, None);
+            self.device.destroy_pipeline(self.pipeline, None);
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device.destroy_buffer(self.quad_vbo, None);
+            self.device.free_memory(self.quad_vbo_mem, None);
+            self.device.destroy_buffer(self.instance_vbo, None);
+            self.device.free_memory(self.instance_vbo_mem, None);
+
             for &semaphore in self.image_available.iter() {
                 self.device.destroy_semaphore(semaphore, None);
             }
@@ -743,238 +937,38 @@ impl Drop for VkBackend {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn record_submit_commandbuffer<F: FnOnce(&Device, vk::CommandBuffer)>(
-    device: &Device,
-    command_buffer: vk::CommandBuffer,
-    command_buffer_reuse_fence: vk::Fence,
-    submit_queue: vk::Queue,
-    wait_mask: &[vk::PipelineStageFlags],
-    wait_semaphores: &[vk::Semaphore],
-    signal_semaphores: &[vk::Semaphore],
-    f: F,
-) {
-    unsafe {
-        device
-            .wait_for_fences(&[command_buffer_reuse_fence], true, u64::MAX)
-            .expect("Wait for fence failed.");
+mod shaders {
+    use crate::utils::find_memorytype_index;
+    use ash::{vk, Device};
 
-        device
-            .reset_fences(&[command_buffer_reuse_fence])
-            .expect("Reset fences failed.");
+    pub fn create_buffer(
+        device: &Device,
+        mem_props: &vk::PhysicalDeviceMemoryProperties,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+        props: vk::MemoryPropertyFlags,
+    ) -> (vk::Buffer, vk::DeviceMemory) {
+        let info = vk::BufferCreateInfo::default()
+            .size(size)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let buffer = unsafe { device.create_buffer(&info, None).unwrap() };
 
-        device
-            .reset_command_buffer(
-                command_buffer,
-                vk::CommandBufferResetFlags::RELEASE_RESOURCES,
-            )
-            .expect("Reset command buffer failed.");
+        let req = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let type_index = find_memorytype_index(&req, mem_props, props)
+            .expect("No suitable memory type for buffer");
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(req.size)
+            .memory_type_index(type_index);
+        let memory = unsafe { device.allocate_memory(&alloc_info, None).unwrap() };
+        unsafe { device.bind_buffer_memory(buffer, memory, 0).unwrap() };
 
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-        device
-            .begin_command_buffer(command_buffer, &command_buffer_begin_info)
-            .expect("Begin commandbuffer");
-        f(device, command_buffer);
-        device
-            .end_command_buffer(command_buffer)
-            .expect("End commandbuffer");
-
-        let command_buffers = vec![command_buffer];
-
-        let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(wait_semaphores)
-            .wait_dst_stage_mask(wait_mask)
-            .command_buffers(&command_buffers)
-            .signal_semaphores(signal_semaphores);
-
-        device
-            .queue_submit(submit_queue, &[submit_info], command_buffer_reuse_fence)
-            .expect("queue submit failed.");
+        (buffer, memory)
     }
-}
-
-pub fn find_memorytype_index(
-    memory_req: &vk::MemoryRequirements,
-    memory_prop: &vk::PhysicalDeviceMemoryProperties,
-    flags: vk::MemoryPropertyFlags,
-) -> Option<u32> {
-    memory_prop.memory_types[..memory_prop.memory_type_count as _]
-        .iter()
-        .enumerate()
-        .find(|(index, memory_type)| {
-            (1 << index) & memory_req.memory_type_bits != 0
-                && memory_type.property_flags & flags == flags
-        })
-        .map(|(index, _memory_type)| index as _)
-}
-
-#[allow(clippy::missing_safety_doc)]
-pub unsafe fn create_surface(
-    entry: &Entry,
-    instance: &Instance,
-    display_handle: RawDisplayHandle,
-    window_handle: RawWindowHandle,
-    allocation_callbacks: Option<&vk::AllocationCallbacks>,
-) -> VkResult<vk::SurfaceKHR> {
-    unsafe {
-        match (display_handle, window_handle) {
-            (RawDisplayHandle::Windows(_), RawWindowHandle::Win32(window)) => {
-                let surface_desc = vk::Win32SurfaceCreateInfoKHR::default()
-                    .hwnd(window.hwnd.get())
-                    .hinstance(
-                        window
-                            .hinstance
-                            .ok_or(vk::Result::ERROR_INITIALIZATION_FAILED)?
-                            .get(),
-                    );
-                let surface_fn = win32_surface::Instance::new(entry, instance);
-                surface_fn.create_win32_surface(&surface_desc, allocation_callbacks)
-            }
-
-            (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(window)) => {
-                let surface_desc = vk::WaylandSurfaceCreateInfoKHR::default()
-                    .display(display.display.as_ptr())
-                    .surface(window.surface.as_ptr());
-                let surface_fn = wayland_surface::Instance::new(entry, instance);
-                surface_fn.create_wayland_surface(&surface_desc, allocation_callbacks)
-            }
-
-            (RawDisplayHandle::Xlib(display), RawWindowHandle::Xlib(window)) => {
-                let surface_desc = vk::XlibSurfaceCreateInfoKHR::default()
-                    .dpy(
-                        display
-                            .display
-                            .ok_or(vk::Result::ERROR_INITIALIZATION_FAILED)?
-                            .as_ptr(),
-                    )
-                    .window(window.window);
-                let surface_fn = xlib_surface::Instance::new(entry, instance);
-                surface_fn.create_xlib_surface(&surface_desc, allocation_callbacks)
-            }
-
-            (RawDisplayHandle::Xcb(display), RawWindowHandle::Xcb(window)) => {
-                let surface_desc = vk::XcbSurfaceCreateInfoKHR::default()
-                    .connection(
-                        display
-                            .connection
-                            .ok_or(vk::Result::ERROR_INITIALIZATION_FAILED)?
-                            .as_ptr(),
-                    )
-                    .window(window.window.get());
-                let surface_fn = xcb_surface::Instance::new(entry, instance);
-                surface_fn.create_xcb_surface(&surface_desc, allocation_callbacks)
-            }
-
-            (RawDisplayHandle::Android(_), RawWindowHandle::AndroidNdk(window)) => {
-                let surface_desc = vk::AndroidSurfaceCreateInfoKHR::default()
-                    .window(window.a_native_window.as_ptr());
-                let surface_fn = android_surface::Instance::new(entry, instance);
-                surface_fn.create_android_surface(&surface_desc, allocation_callbacks)
-            }
-
-            #[cfg(target_os = "macos")]
-            (RawDisplayHandle::AppKit(_), RawWindowHandle::AppKit(window)) => {
-                use raw_window_metal::{appkit, Layer};
-
-                let layer = match appkit::metal_layer_from_handle(window) {
-                    Layer::Existing(layer) | Layer::Allocated(layer) => layer.cast(),
-                };
-
-                let surface_desc = vk::MetalSurfaceCreateInfoEXT::default().layer(&*layer);
-                let surface_fn = metal_surface::Instance::new(entry, instance);
-                surface_fn.create_metal_surface(&surface_desc, allocation_callbacks)
-            }
-
-            #[cfg(target_os = "ios")]
-            (RawDisplayHandle::UiKit(_), RawWindowHandle::UiKit(window)) => {
-                use raw_window_metal::{uikit, Layer};
-
-                let layer = match uikit::metal_layer_from_handle(window) {
-                    Layer::Existing(layer) | Layer::Allocated(layer) => layer.cast(),
-                };
-
-                let surface_desc = vk::MetalSurfaceCreateInfoEXT::default().layer(&*layer);
-                let surface_fn = metal_surface::Instance::new(entry, instance);
-                surface_fn.create_metal_surface(&surface_desc, allocation_callbacks)
-            }
-
-            _ => Err(vk::Result::ERROR_EXTENSION_NOT_PRESENT),
-        }
+    pub fn create_shader(device: &Device, bytes: &[u8]) -> vk::ShaderModule {
+        let (prefix, code, _) = unsafe { bytes.align_to::<u32>() };
+        assert!(prefix.is_empty(), "SPIR-V must be 4-byte aligned");
+        let info = vk::ShaderModuleCreateInfo::default().code(code);
+        unsafe { device.create_shader_module(&info, None).unwrap() }
     }
-}
-
-unsafe extern "system" fn vulkan_debug_callback(
-    message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-    message_type: vk::DebugUtilsMessageTypeFlagsEXT,
-    p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
-    _user_data: *mut std::os::raw::c_void,
-) -> vk::Bool32 {
-    let callback_data = unsafe { *p_callback_data };
-    let message_id_number = callback_data.message_id_number;
-
-    let message_id_name = if callback_data.p_message_id_name.is_null() {
-        Cow::from("")
-    } else {
-        unsafe { ffi::CStr::from_ptr(callback_data.p_message_id_name) }.to_string_lossy()
-    };
-
-    let message = if callback_data.p_message.is_null() {
-        Cow::from("")
-    } else {
-        unsafe { ffi::CStr::from_ptr(callback_data.p_message) }.to_string_lossy()
-    };
-
-    println!(
-        "{message_severity:?}:\n{message_type:?} [{message_id_name} ({message_id_number})] : {message}\n",
-    );
-
-    vk::FALSE
-}
-
-pub fn enumerate_required_extensions(
-    display_handle: RawDisplayHandle,
-) -> VkResult<&'static [*const c_char]> {
-    let extensions = match display_handle {
-        RawDisplayHandle::Windows(_) => {
-            const WINDOWS_EXTS: [*const c_char; 2] =
-                [surface::NAME.as_ptr(), win32_surface::NAME.as_ptr()];
-            &WINDOWS_EXTS
-        }
-
-        RawDisplayHandle::Wayland(_) => {
-            const WAYLAND_EXTS: [*const c_char; 2] =
-                [surface::NAME.as_ptr(), wayland_surface::NAME.as_ptr()];
-            &WAYLAND_EXTS
-        }
-
-        RawDisplayHandle::Xlib(_) => {
-            const XLIB_EXTS: [*const c_char; 2] =
-                [surface::NAME.as_ptr(), xlib_surface::NAME.as_ptr()];
-            &XLIB_EXTS
-        }
-
-        RawDisplayHandle::Xcb(_) => {
-            const XCB_EXTS: [*const c_char; 2] =
-                [surface::NAME.as_ptr(), xcb_surface::NAME.as_ptr()];
-            &XCB_EXTS
-        }
-
-        RawDisplayHandle::Android(_) => {
-            const ANDROID_EXTS: [*const c_char; 2] =
-                [surface::NAME.as_ptr(), android_surface::NAME.as_ptr()];
-            &ANDROID_EXTS
-        }
-
-        RawDisplayHandle::AppKit(_) | RawDisplayHandle::UiKit(_) => {
-            const METAL_EXTS: [*const c_char; 2] =
-                [surface::NAME.as_ptr(), metal_surface::NAME.as_ptr()];
-            &METAL_EXTS
-        }
-
-        _ => return Err(vk::Result::ERROR_EXTENSION_NOT_PRESENT),
-    };
-
-    Ok(extensions)
 }
