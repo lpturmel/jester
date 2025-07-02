@@ -17,6 +17,8 @@ do not use! :)
 
 ## Usage
 
+**Warning the API is changing and is really rough at the moment**
+
 ```rust
 use jester::prelude::*;
 use tracing::{warn};
