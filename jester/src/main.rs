@@ -30,15 +30,18 @@ impl Scene for OddScene {
             if let Some(sprite) = ctx.pool.sprite_mut(player) {
                 sprite.rect[1] += SPEED * ctx.dt;
             }
-        } else if ctx.input.key_pressed(KeyCode::KeyS) {
+        }
+        if ctx.input.key_pressed(KeyCode::KeyS) {
             if let Some(sprite) = ctx.pool.sprite_mut(player) {
                 sprite.rect[1] -= SPEED * ctx.dt;
             }
-        } else if ctx.input.key_pressed(KeyCode::KeyA) {
+        }
+        if ctx.input.key_pressed(KeyCode::KeyA) {
             if let Some(sprite) = ctx.pool.sprite_mut(player) {
                 sprite.rect[0] -= SPEED * ctx.dt;
             }
-        } else if ctx.input.key_pressed(KeyCode::KeyD) {
+        }
+        if ctx.input.key_pressed(KeyCode::KeyD) {
             if let Some(sprite) = ctx.pool.sprite_mut(player) {
                 sprite.rect[0] += SPEED * ctx.dt;
             }
