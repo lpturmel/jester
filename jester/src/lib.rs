@@ -25,6 +25,7 @@ pub mod prelude {
     pub use jester_core::{
         Backend, Camera, Commands, Ctx, EntityId, Renderer, Scene, Sprite, SpriteBatch,
     };
+    pub use winit::keyboard::KeyCode;
 }
 
 type Result<T> = std::result::Result<T, Error>;
