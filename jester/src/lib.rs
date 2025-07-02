@@ -5,7 +5,7 @@ use std::{
 
 #[cfg(feature = "vulkan")]
 pub use b_vk::VkBackend as DefaultBackend;
-use jester_core::{Error, Renderer, SpriteBatch, SpriteInstance, TextureId};
+use jester_core::{Camera, Error, Renderer, SpriteBatch, SpriteInstance, TextureId};
 use tracing::info;
 use winit::{
     application::ApplicationHandler,
@@ -15,7 +15,9 @@ use winit::{
 };
 
 pub mod prelude {
-    pub use jester_core::{Backend, Renderer, SpriteBatch};
+    pub use super::App;
+    pub use glam::Vec2;
+    pub use jester_core::{Backend, Camera, Renderer, SpriteBatch};
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -28,6 +30,7 @@ pub struct App {
     batches: Vec<SpriteBatch>,
     pending: Vec<Job>,
     next_tex: AtomicU32,
+    cameras: Vec<Camera>,
 }
 
 impl App {
@@ -39,6 +42,7 @@ impl App {
             batches: Vec::new(),
             pending: Vec::new(),
             next_tex: AtomicU32::new(0),
+            cameras: Vec::new(),
         }
     }
 
@@ -60,6 +64,10 @@ impl App {
         self.pending.push(Box::new(move |app: &mut App| {
             app.push_sprite(pos_size, uv, tex);
         }));
+    }
+    pub fn add_camera(&mut self, camera: Camera) -> usize {
+        self.cameras.push(camera);
+        self.cameras.len() - 1
     }
     pub fn load_asset<P>(&mut self, path: P) -> Result<TextureId>
     where
@@ -103,6 +111,7 @@ impl ApplicationHandler for App {
             .create_window(Window::default_attributes().with_title(&self.app_name))
             .unwrap();
         info!("Creating renderer");
+        // TODO: expose camera to user
         let rend = Renderer::<DefaultBackend>::new(&self.app_name, &win)
             .expect("Failed to create renderer");
 
@@ -128,11 +137,22 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                let Some(r) = &mut self.renderer else { return };
-                r.begin_frame();
-                for batch in &self.batches {
-                    r.draw_sprites(batch);
+                if self.cameras.is_empty() {
+                    let r = self.renderer.as_mut().unwrap();
+                    r.begin_frame();
+                    r.end_frame();
+                    return;
                 }
+                let r = self.renderer.as_mut().unwrap();
+                r.begin_frame();
+
+                for cam in &self.cameras {
+                    r.bind_camera(cam);
+                    for batch in &self.batches {
+                        r.draw_sprites(batch);
+                    }
+                }
+
                 r.end_frame();
                 self.win.as_ref().unwrap().request_redraw();
             }

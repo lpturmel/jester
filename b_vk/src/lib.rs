@@ -8,7 +8,10 @@ use ash::{
     vk::{self, API_VERSION_1_3},
     Device, Entry, Instance,
 };
-use jester_core::{Backend, SpriteBatch, SpriteInstance, TextureId, MAX_SPRITES, MAX_TEXTURES};
+use jester_core::{
+    Backend, Camera, SpriteBatch, SpriteInstance, TextureId, MAX_SPRITES, MAX_TEXTURES,
+    VERTEX_COUNT,
+};
 use std::{ffi, os::raw::c_char};
 use tracing::info;
 use winit::{
@@ -239,6 +242,25 @@ impl Backend for VkBackend {
             return;
         }
         self.swapchain_rebuild = true;
+    }
+
+    fn bind_camera(&mut self, camera: &Camera) {
+        let pc = [
+            self.surface_resolution.width as f32,
+            self.surface_resolution.height as f32,
+            camera.center.x,
+            camera.center.y,
+            camera.zoom,
+        ];
+        unsafe {
+            self.device.cmd_push_constants(
+                self.cmds[self.frame_idx],
+                self.pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                bytemuck::cast_slice(&pc),
+            );
+        }
     }
 
     fn create_texture(
@@ -474,7 +496,6 @@ impl Backend for VkBackend {
                 .update_descriptor_sets(std::slice::from_ref(&write), &[]);
         }
 
-        /* ---------- keep handles ------------------------------------------- */
         self.images.push(image);
         self.image_mem.push(image_mem);
         self.image_views.push(view);
@@ -550,17 +571,6 @@ impl Backend for VkBackend {
                     })
                     .clear_values(std::slice::from_ref(&clear)),
                 vk::SubpassContents::INLINE,
-            );
-            let screen = [
-                self.surface_resolution.width as f32,
-                self.surface_resolution.height as f32,
-            ];
-            self.device.cmd_push_constants(
-                self.cmds[self.frame_idx],
-                self.pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                bytemuck::bytes_of(&screen),
             );
         }
         self.instance_cursor = 0;
@@ -647,7 +657,7 @@ impl Backend for VkBackend {
                 .cmd_bind_vertex_buffers(cmd, 0, &buffers, &offsets);
 
             self.device
-                .cmd_draw(cmd, 4, batch.instances.len() as u32, 0, 0);
+                .cmd_draw(cmd, VERTEX_COUNT as u32, batch.instances.len() as u32, 0, 0);
         }
         self.instance_cursor += byte_count;
     }
@@ -1031,7 +1041,7 @@ impl Backend for VkBackend {
             let pc_range = vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX)
                 .offset(0)
-                .size(std::mem::size_of::<[f32; 2]>() as u32);
+                .size(std::mem::size_of::<[f32; 5]>() as u32);
 
             let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
                 .set_layouts(std::slice::from_ref(&desc_set_layout))

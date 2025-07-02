@@ -1,9 +1,10 @@
-use jester::App;
+use jester::prelude::*;
 
 fn main() {
     tracing_subscriber::fmt::init();
 
     let mut app = App::new("cool game".to_string());
+    app.add_camera(Camera::default());
     let aseprite_id = app.load_asset("assets/aseprite.png").unwrap();
     let samurai_id = app.load_asset("assets/samurai.png").unwrap();
 
