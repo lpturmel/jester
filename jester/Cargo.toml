@@ -12,6 +12,7 @@ winit.workspace = true
 jester_core = { path = "../jester_core" }
 b_vk = { path = "../b_vk", optional = true }
 glam.workspace = true
+hashbrown.workspace = true
 
 [features]
 default = ["vulkan"]

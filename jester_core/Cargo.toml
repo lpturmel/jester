@@ -12,3 +12,5 @@ tracing-subscriber.workspace = true
 winit.workspace = true
 image.workspace = true
 glam.workspace = true
+hashbrown.workspace = true
+smallvec = "1.15.1"

@@ -46,17 +46,16 @@ impl<B: Backend> Renderer<B> {
         &mut self.backend
     }
 
-    pub fn load_texture_sync<P>(&mut self, path: P) -> ImageResult<TextureId>
+    pub fn load_texture_sync<P>(&mut self, tex_id: TextureId, path: P) -> ImageResult<()>
     where
         P: AsRef<std::path::Path>,
     {
         let img = image::open(path)?.to_rgba8();
         let (width, height) = img.dimensions();
-        let tex_id = self
-            .backend
-            .create_texture(width, height, &img)
+        self.backend
+            .create_texture(tex_id, width, height, &img)
             .expect("Failed to create texture");
-        Ok(tex_id)
+        Ok(())
     }
 }
 
@@ -73,8 +72,9 @@ pub trait Backend: Sized {
 
     fn create_texture(
         &mut self,
+        texture_id: TextureId,
         width: u32,
         height: u32,
         pixels: &[u8],
-    ) -> Result<TextureId, Self::Error>;
+    ) -> Result<(), Self::Error>;
 }

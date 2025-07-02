@@ -265,10 +265,11 @@ impl Backend for VkBackend {
 
     fn create_texture(
         &mut self,
+        texture_id: TextureId,
         width: u32,
         height: u32,
         pixels: &[u8],
-    ) -> Result<TextureId, vk::Result> {
+    ) -> Result<(), vk::Result> {
         assert_eq!(
             pixels.len(),
             (width * height * 4) as usize,
@@ -495,14 +496,24 @@ impl Backend for VkBackend {
             self.device
                 .update_descriptor_sets(std::slice::from_ref(&write), &[]);
         }
+        let idx = texture_id.0 as usize;
 
-        self.images.push(image);
-        self.image_mem.push(image_mem);
-        self.image_views.push(view);
-        self.samplers.push(sampler);
-        self.descriptor_sets.push(desc_set);
+        if idx >= self.descriptor_sets.len() {
+            self.images.resize(idx + 1, vk::Image::null());
+            self.image_mem.resize(idx + 1, vk::DeviceMemory::null());
+            self.image_views.resize(idx + 1, vk::ImageView::null());
+            self.samplers.resize(idx + 1, vk::Sampler::null());
+            self.descriptor_sets
+                .resize(idx + 1, vk::DescriptorSet::null());
+        }
 
-        Ok(TextureId((self.descriptor_sets.len() - 1) as u32))
+        self.images[idx] = image;
+        self.image_mem[idx] = image_mem;
+        self.image_views[idx] = view;
+        self.samplers[idx] = sampler;
+        self.descriptor_sets[idx] = desc_set;
+
+        Ok(())
     }
 
     fn begin_frame(&mut self) {
@@ -954,7 +965,6 @@ impl Backend for VkBackend {
                 )?;
             }
 
-            info!("Creating quad VBO");
             let quad_size =
                 (std::mem::size_of::<QuadVertex>() * QUAD_VERTS.len()) as vk::DeviceSize;
             let (quad_vbo, quad_vbo_mem) = shaders::create_buffer(
@@ -965,7 +975,6 @@ impl Backend for VkBackend {
                 vk::MemoryPropertyFlags::DEVICE_LOCAL,
             );
 
-            info!("Creating quad staging buffer");
             {
                 let (staging_buf, staging_mem) = shaders::create_buffer(
                     &device,
@@ -1010,7 +1019,6 @@ impl Backend for VkBackend {
                 device.destroy_buffer(staging_buf, None);
                 device.free_memory(staging_mem, None);
             }
-            info!("Creating instance VBO");
             let inst_size = (std::mem::size_of::<SpriteInstance>() * MAX_SPRITES) as vk::DeviceSize;
             let (instance_vbo, instance_vbo_mem) = shaders::create_buffer(
                 &device,
@@ -1020,13 +1028,11 @@ impl Backend for VkBackend {
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             );
 
-            info!("Creating shader modules");
             let vert_mod =
                 shaders::create_shader(&device, include_bytes!("shaders/sprite.vert.spv"));
             let frag_mod =
                 shaders::create_shader(&device, include_bytes!("shaders/sprite.frag.spv"));
 
-            info!("Creating pipeline layout");
             let set_layout_binding = vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
@@ -1159,7 +1165,6 @@ impl Backend for VkBackend {
                 .render_pass(render_pass)
                 .subpass(0);
 
-            info!("Creating pipeline");
             let pipeline = device
                 .create_graphics_pipelines(
                     vk::PipelineCache::null(),

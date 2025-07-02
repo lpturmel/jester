@@ -30,3 +30,10 @@ pub struct SpriteBatch {
     pub tex: TextureId,
     pub instances: Vec<SpriteInstance>,
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct Sprite {
+    pub rect: [f32; 4],
+    pub uv: [f32; 4],
+    pub tex: TextureId,
+}
