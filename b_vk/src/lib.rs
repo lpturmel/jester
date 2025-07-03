@@ -1,9 +1,7 @@
-use self::utils::{
-    create_surface, enumerate_required_extensions, record_submit_commandbuffer,
-    vulkan_debug_callback,
-};
+use self::utils::{create_surface, enumerate_required_extensions, record_submit_commandbuffer};
+#[cfg(feature = "debug")]
+use ash::ext::debug_utils;
 use ash::{
-    ext::debug_utils,
     khr::{surface, swapchain},
     vk::{self, API_VERSION_1_3},
     Device, Entry, Instance,
@@ -12,7 +10,7 @@ use jester_core::{
     Backend, Camera, SpriteBatch, SpriteInstance, TextureId, MAX_SPRITES, MAX_TEXTURES,
     VERTEX_COUNT,
 };
-use std::{ffi, os::raw::c_char};
+use std::ffi;
 use tracing::info;
 use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
@@ -714,6 +712,8 @@ impl Backend for VkBackend {
 
             #[cfg(feature = "debug")]
             let layers_names_raw = {
+                use std::os::raw::c_char;
+
                 let layer_names = [c"VK_LAYER_KHRONOS_validation"];
                 let layers_names_raw: Vec<*const c_char> = layer_names
                     .iter()
@@ -732,25 +732,31 @@ impl Backend for VkBackend {
                 .create_instance(&create_info, None)
                 .expect("Instance creation error");
 
-            let debug_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
-                .message_severity(
-                    vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
-                        | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                        | vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
-                )
-                .message_type(
-                    vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
-                        | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
-                        | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
-                )
-                .pfn_user_callback(Some(vulkan_debug_callback));
+            #[cfg(feature = "debug")]
+            let (debug_call_back, debug_utils_loader) = {
+                use crate::utils::vulkan_debug_callback;
 
-            #[cfg(feature = "debug")]
-            let debug_utils_loader = debug_utils::Instance::new(&entry, &instance);
-            #[cfg(feature = "debug")]
-            let debug_call_back = debug_utils_loader
-                .create_debug_utils_messenger(&debug_info, None)
-                .unwrap();
+                let debug_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
+                    .message_severity(
+                        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                            | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+                            | vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
+                    )
+                    .message_type(
+                        vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                            | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
+                            | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
+                    )
+                    .pfn_user_callback(Some(vulkan_debug_callback));
+
+                let debug_utils_loader = debug_utils::Instance::new(&entry, &instance);
+                (
+                    debug_utils_loader
+                        .create_debug_utils_messenger(&debug_info, None)
+                        .unwrap(),
+                    debug_utils_loader,
+                )
+            };
             let surface = create_surface(
                 &entry,
                 &instance,

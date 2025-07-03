@@ -12,7 +12,11 @@ impl Scene for OddScene {
     fn start(&mut self, ctx: &mut Ctx<'_>) {
         let aseprite_id = ctx.load_asset("assets/aseprite.png");
         let entity = ctx.spawn_sprite(Sprite {
-            rect: [400.0, 300.0, 128.0, 128.0],
+            transform: Transform {
+                translation: Vec2::new(400.0, 300.0),
+                scale: Vec2::new(128.0, 128.0),
+                ..Default::default()
+            },
             uv: [0.0, 0.0, 1.0, 1.0],
             tex: aseprite_id,
         });
@@ -28,22 +32,22 @@ impl Scene for OddScene {
         const SPEED: f32 = 150.0;
         if ctx.input.key_pressed(KeyCode::KeyW) {
             if let Some(sprite) = ctx.pool.sprite_mut(player) {
-                sprite.rect[1] += SPEED * ctx.dt;
+                sprite.transform.translation.y += SPEED * ctx.dt;
             }
         }
         if ctx.input.key_pressed(KeyCode::KeyS) {
             if let Some(sprite) = ctx.pool.sprite_mut(player) {
-                sprite.rect[1] -= SPEED * ctx.dt;
+                sprite.transform.translation.y -= SPEED * ctx.dt;
             }
         }
         if ctx.input.key_pressed(KeyCode::KeyA) {
             if let Some(sprite) = ctx.pool.sprite_mut(player) {
-                sprite.rect[0] -= SPEED * ctx.dt;
+                sprite.transform.translation.x -= SPEED * ctx.dt;
             }
         }
         if ctx.input.key_pressed(KeyCode::KeyD) {
             if let Some(sprite) = ctx.pool.sprite_mut(player) {
-                sprite.rect[0] += SPEED * ctx.dt;
+                sprite.transform.translation.x += SPEED * ctx.dt;
             }
         }
 
@@ -64,7 +68,11 @@ impl Scene for EvenScene {
         self.timer = 0.0;
         let samurai_id = ctx.load_asset("assets/samurai.png");
         ctx.spawn_sprite(Sprite {
-            rect: [400.0, 300.0, 100.0, 170.0],
+            transform: Transform {
+                translation: Vec2::new(400.0, 300.0),
+                scale: Vec2::new(100.0, 170.0),
+                ..Default::default()
+            },
             uv: [0.0, 0.0, 1.0, 1.0],
             tex: samurai_id,
         });

@@ -1,3 +1,4 @@
+use crate::Transform;
 use std::ops::Deref;
 
 #[repr(transparent)]
@@ -33,7 +34,7 @@ pub struct SpriteBatch {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Sprite {
-    pub rect: [f32; 4],
+    pub transform: Transform,
     pub uv: [f32; 4],
     pub tex: TextureId,
 }

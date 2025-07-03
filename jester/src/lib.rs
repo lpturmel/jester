@@ -23,7 +23,7 @@ pub mod prelude {
     pub use crate::timer::{Timer, TimerMode};
     pub use glam::Vec2;
     pub use jester_core::{
-        Backend, Camera, Commands, Ctx, EntityId, Renderer, Scene, Sprite, SpriteBatch,
+        Backend, Camera, Commands, Ctx, EntityId, Renderer, Scene, Sprite, SpriteBatch, Transform,
     };
     pub use winit::keyboard::KeyCode;
 }
@@ -141,13 +141,13 @@ impl App {
         for s in self.pool.entities.values() {
             match self.batches.iter_mut().find(|b| b.tex == s.tex) {
                 Some(b) => b.instances.push(SpriteInstance {
-                    pos_size: s.rect,
+                    pos_size: s.transform.into(),
                     uv: s.uv,
                 }),
                 None => self.batches.push(SpriteBatch {
                     tex: s.tex,
                     instances: vec![SpriteInstance {
-                        pos_size: s.rect,
+                        pos_size: s.transform.into(),
                         uv: s.uv,
                     }],
                 }),
