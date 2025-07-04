@@ -10,17 +10,15 @@ struct OddScene {
 
 impl Scene for OddScene {
     fn start(&mut self, ctx: &mut Ctx<'_>) {
+        ctx.spawn_camera(Camera::pixel_perfect(ctx.screen_pos.x, ctx.screen_pos.y));
         let aseprite_id = ctx.load_asset("assets/aseprite.png");
-        let entity = ctx.spawn_sprite(Sprite {
-            transform: Transform {
-                translation: Vec2::new(400.0, 300.0),
-                scale: Vec2::new(128.0, 128.0),
-                ..Default::default()
-            },
-            uv: [0.0, 0.0, 1.0, 1.0],
-            tex: aseprite_id,
-        });
         info!("Aseprite image has id {:?}", aseprite_id);
+
+        let entity = ctx.spawn_sprite(Sprite {
+            transform: Transform::from_xy(0.0, 0.0),
+            tex: aseprite_id,
+            ..Default::default()
+        });
         self.player = Some(entity);
     }
     fn update(&mut self, ctx: &mut Ctx<'_>) {
@@ -28,59 +26,22 @@ impl Scene for OddScene {
             warn!("Player entity not found");
             return;
         };
+        let Some(player_sprite) = ctx.pool.sprite_mut(player) else {
+            return;
+        };
 
         const SPEED: f32 = 150.0;
         if ctx.input.key_pressed(KeyCode::KeyW) {
-            if let Some(sprite) = ctx.pool.sprite_mut(player) {
-                sprite.transform.translation.y += SPEED * ctx.dt;
-            }
+            player_sprite.transform.translation.y += SPEED * ctx.dt;
         }
         if ctx.input.key_pressed(KeyCode::KeyS) {
-            if let Some(sprite) = ctx.pool.sprite_mut(player) {
-                sprite.transform.translation.y -= SPEED * ctx.dt;
-            }
+            player_sprite.transform.translation.y -= SPEED * ctx.dt;
         }
         if ctx.input.key_pressed(KeyCode::KeyA) {
-            if let Some(sprite) = ctx.pool.sprite_mut(player) {
-                sprite.transform.translation.x -= SPEED * ctx.dt;
-            }
+            player_sprite.transform.translation.x -= SPEED * ctx.dt;
         }
         if ctx.input.key_pressed(KeyCode::KeyD) {
-            if let Some(sprite) = ctx.pool.sprite_mut(player) {
-                sprite.transform.translation.x += SPEED * ctx.dt;
-            }
-        }
-
-        if ctx.input.just_pressed(KeyCode::Space) {
-            info!("Switching to even scene");
-            ctx.goto_scene::<EvenScene>();
-        }
-    }
-}
-
-#[derive(Default)]
-struct EvenScene {
-    timer: f32,
-}
-
-impl Scene for EvenScene {
-    fn start(&mut self, ctx: &mut Ctx<'_>) {
-        self.timer = 0.0;
-        let samurai_id = ctx.load_asset("assets/samurai.png");
-        ctx.spawn_sprite(Sprite {
-            transform: Transform {
-                translation: Vec2::new(400.0, 300.0),
-                scale: Vec2::new(100.0, 170.0),
-                ..Default::default()
-            },
-            uv: [0.0, 0.0, 1.0, 1.0],
-            tex: samurai_id,
-        });
-    }
-    fn update(&mut self, ctx: &mut Ctx<'_>) {
-        if ctx.input.just_pressed(KeyCode::Space) {
-            info!("Switching to odd scene");
-            ctx.goto_scene::<OddScene>();
+            player_sprite.transform.translation.x += SPEED * ctx.dt;
         }
     }
 }
@@ -89,9 +50,7 @@ fn main() {
     tracing_subscriber::fmt::init();
 
     let mut app = App::new("cool game".to_string());
-    app.add_camera(Camera::default());
     app.add_scene(OddScene::default());
-    app.add_scene(EvenScene::default());
     app.set_start_scene::<OddScene>();
 
     app.add_resource(Timer::new(Duration::from_secs(5), TimerMode::Loop));

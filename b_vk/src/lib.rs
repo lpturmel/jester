@@ -7,8 +7,7 @@ use ash::{
     Device, Entry, Instance,
 };
 use jester_core::{
-    Backend, Camera, SpriteBatch, SpriteInstance, TextureId, MAX_SPRITES, MAX_TEXTURES,
-    VERTEX_COUNT,
+    Backend, Camera, SpriteBatch, SpriteInstance, MAX_SPRITES, MAX_TEXTURES, VERTEX_COUNT,
 };
 use std::ffi;
 use tracing::info;
@@ -263,11 +262,10 @@ impl Backend for VkBackend {
 
     fn create_texture(
         &mut self,
-        texture_id: TextureId,
         width: u32,
         height: u32,
         pixels: &[u8],
-    ) -> Result<(), vk::Result> {
+    ) -> Result<usize, vk::Result> {
         assert_eq!(
             pixels.len(),
             (width * height * 4) as usize,
@@ -494,24 +492,15 @@ impl Backend for VkBackend {
             self.device
                 .update_descriptor_sets(std::slice::from_ref(&write), &[]);
         }
-        let idx = texture_id.0 as usize;
+        let idx = self.descriptor_sets.len();
 
-        if idx >= self.descriptor_sets.len() {
-            self.images.resize(idx + 1, vk::Image::null());
-            self.image_mem.resize(idx + 1, vk::DeviceMemory::null());
-            self.image_views.resize(idx + 1, vk::ImageView::null());
-            self.samplers.resize(idx + 1, vk::Sampler::null());
-            self.descriptor_sets
-                .resize(idx + 1, vk::DescriptorSet::null());
-        }
+        self.images.push(image);
+        self.image_mem.push(image_mem);
+        self.image_views.push(view);
+        self.samplers.push(sampler);
+        self.descriptor_sets.push(desc_set);
 
-        self.images[idx] = image;
-        self.image_mem[idx] = image_mem;
-        self.image_views[idx] = view;
-        self.samplers[idx] = sampler;
-        self.descriptor_sets[idx] = desc_set;
-
-        Ok(())
+        Ok(idx)
     }
 
     fn begin_frame(&mut self) {
@@ -623,7 +612,7 @@ impl Backend for VkBackend {
         self.frame_idx = (fi + 1) % Self::MAX_FRAMES_IN_FLIGHT;
     }
 
-    fn draw_sprites(&mut self, batch: &SpriteBatch) {
+    fn draw_sprites(&mut self, idx: usize, batch: &SpriteBatch) {
         if batch.instances.is_empty() {
             return;
         }
@@ -645,7 +634,7 @@ impl Backend for VkBackend {
         }
 
         let cmd = self.cmds[self.frame_idx];
-        let set = self.descriptor_sets[batch.tex.0 as usize];
+        let set = self.descriptor_sets[idx];
 
         unsafe {
             self.device

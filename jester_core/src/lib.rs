@@ -17,6 +17,25 @@ pub struct Camera {
     pub zoom: f32,
 }
 
+impl Camera {
+    pub fn pixel_perfect(w: f32, h: f32) -> Self {
+        Self {
+            center: Vec2::new(-w * 0.5, -h * 0.5),
+            zoom: 1.0,
+        }
+    }
+
+    pub fn update_pixel_perfect(&mut self, new_w: f32, new_h: f32) {
+        self.center = Vec2::new(-new_w * 0.5, -new_h * 0.5);
+    }
+    pub fn world_to_screen(&self, world: Vec2, screen: Vec2) -> Vec2 {
+        (world - self.center) * self.zoom + screen * 0.5
+    }
+    pub fn screen_to_world(&self, screen_pt: Vec2, screen: Vec2) -> Vec2 {
+        (screen_pt - screen * 0.5) / self.zoom + self.center
+    }
+}
+
 impl Default for Camera {
     fn default() -> Self {
         Self {

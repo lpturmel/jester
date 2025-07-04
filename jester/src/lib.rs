@@ -2,6 +2,7 @@ use std::{any::TypeId, time::Instant};
 
 #[cfg(feature = "vulkan")]
 pub use b_vk::VkBackend as DefaultBackend;
+use glam::Vec2;
 use hashbrown::HashMap;
 use jester_core::{
     Camera, Commands, Ctx, EntityPool, Error, InputState, Renderer, Resources, Scene, SceneKey,
@@ -104,19 +105,25 @@ impl App {
         }
     }
 
-    pub fn add_camera(&mut self, camera: Camera) -> usize {
-        self.cameras.push(camera);
-        self.cameras.len() - 1
-    }
     fn apply_commands(&mut self, mut cmds: Commands) {
-        for s in cmds.sprites_to_spawn.drain(..) {
-            let _ = self.pool.spawn(s);
-        }
-
         for (tex_id, p) in cmds.assets_to_load.drain(..) {
             if let Some(r) = &mut self.renderer {
                 let _ = r.load_texture_sync(tex_id, &p);
             }
+        }
+        for (id, mut s) in cmds.sprites_to_spawn.drain(..) {
+            if let Some(renderer) = &mut self.renderer {
+                if let Some(meta) = renderer.texture_meta(s.tex) {
+                    info!("Found texture meta for {:?}", s.tex);
+                    info!("New size: {:?}", meta);
+                    s.transform = s.transform.with_size(meta.w as f32, meta.h as f32);
+                }
+            }
+            self.pool.entities.insert(id, s);
+        }
+
+        for c in cmds.cameras_to_spawn.drain(..) {
+            self.cameras.push(c);
         }
 
         if let Some(target_type) = cmds.scene_switch.take() {
@@ -187,6 +194,7 @@ impl ApplicationHandler for App {
         _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
+        let win_size = self.win.as_ref().unwrap().inner_size();
         match event {
             WindowEvent::CloseRequested => {
                 info!("The close button was pressed; stopping");
@@ -229,6 +237,7 @@ impl ApplicationHandler for App {
                             commands: &mut startup_cmds,
                             pool: &mut self.pool,
                             input: &self.input_state,
+                            screen_pos: Vec2::new(win_size.width as f32, win_size.height as f32),
                         };
                         slot.scene.start(&mut ctx);
                         slot.must_start = false;
@@ -240,6 +249,7 @@ impl ApplicationHandler for App {
                 {
                     let slot = &mut self.scenes[*self.active_scene];
                     let mut ctx = Ctx {
+                        screen_pos: Vec2::new(win_size.width as f32, win_size.height as f32),
                         dt: self.dt,
                         resources: &mut self.resources,
                         commands: &mut cmds,
@@ -272,6 +282,9 @@ impl ApplicationHandler for App {
                 self.win.as_ref().unwrap().request_redraw();
             }
             WindowEvent::Resized(size) => {
+                for c in &mut self.cameras {
+                    c.update_pixel_perfect(size.width as f32, size.height as f32);
+                }
                 let Some(r) = &mut self.renderer else { return };
                 r.handle_resize(size);
             }
