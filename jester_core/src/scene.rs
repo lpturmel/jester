@@ -1,12 +1,13 @@
+use glam::Vec2;
 use std::{
     any::{Any, TypeId},
     hash::{DefaultHasher, Hash, Hasher},
     ops::Deref,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use crate::{InputState, Sprite, TextureId};
+use crate::{Camera, InputState, Sprite, TextureId};
 use hashbrown::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -45,15 +46,19 @@ pub struct Ctx<'a> {
     pub commands: &'a mut Commands,
     pub pool: &'a mut EntityPool,
     pub input: &'a InputState,
+    pub screen_pos: Vec2,
 }
 
 impl<'a> Ctx<'a> {
     pub fn spawn_sprite(&mut self, s: Sprite) -> EntityId {
-        self.pool.spawn(s)
+        let id = EntityId(self.pool.next_id.fetch_add(1, Ordering::Relaxed));
+        self.commands.sprites_to_spawn.push((id, s));
+        id
     }
-    pub fn load_asset(&mut self, p: impl Into<PathBuf>) -> TextureId {
-        let id = TextureId(self.pool.next_id.fetch_add(1, Ordering::Relaxed));
-        self.commands.assets_to_load.push((id, p.into()));
+    pub fn load_asset(&mut self, p: impl AsRef<Path>) -> TextureId {
+        let p = p.as_ref();
+        let id = TextureId::from_path(p);
+        self.commands.assets_to_load.push((id, p.to_owned()));
         id
     }
     pub fn goto_scene<S>(&mut self)
@@ -61,6 +66,11 @@ impl<'a> Ctx<'a> {
         S: Scene + 'static,
     {
         self.commands.scene_switch = Some(TypeId::of::<S>());
+    }
+
+    pub fn spawn_camera(&mut self, camera: Camera) -> usize {
+        self.commands.cameras_to_spawn.push(camera);
+        self.commands.cameras_to_spawn.len() - 1
     }
 }
 
@@ -71,11 +81,6 @@ pub struct EntityPool {
 }
 
 impl EntityPool {
-    pub fn spawn(&mut self, s: Sprite) -> EntityId {
-        let id = EntityId(self.next_id.fetch_add(1, Ordering::Relaxed));
-        self.entities.insert(id, s);
-        id
-    }
     pub fn sprite_mut(&mut self, id: EntityId) -> Option<&mut Sprite> {
         self.entities.get_mut(&id)
     }
@@ -83,10 +88,11 @@ impl EntityPool {
 
 #[derive(Default)]
 pub struct Commands {
-    pub sprites_to_spawn: Vec<Sprite>,
+    pub sprites_to_spawn: Vec<(EntityId, Sprite)>,
     pub assets_to_load: Vec<(TextureId, PathBuf)>,
     pub despawn: Vec<EntityId>,
     pub scene_switch: Option<TypeId>,
+    pub cameras_to_spawn: Vec<Camera>,
 }
 
 #[derive(Default)]

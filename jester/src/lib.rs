@@ -1,12 +1,12 @@
-use std::{any::TypeId, time::Instant};
-
 #[cfg(feature = "vulkan")]
 pub use b_vk::VkBackend as DefaultBackend;
+use glam::Vec2;
 use hashbrown::HashMap;
 use jester_core::{
     Camera, Commands, Ctx, EntityPool, Error, InputState, Renderer, Resources, Scene, SceneKey,
     SpriteBatch, SpriteInstance,
 };
+use std::{any::TypeId, time::Instant};
 use tracing::{info, warn};
 use winit::{
     application::ApplicationHandler,
@@ -16,11 +16,17 @@ use winit::{
     window::Window,
 };
 
+use self::fps::FpsStats;
+
+mod fps;
 mod timer;
 
 pub mod prelude {
     pub use super::App;
-    pub use crate::timer::{Timer, TimerMode};
+    pub use crate::{
+        fps::FpsStats,
+        timer::{Timer, TimerMode},
+    };
     pub use glam::Vec2;
     pub use jester_core::{
         Backend, Camera, Commands, Ctx, EntityId, Renderer, Scene, Sprite, SpriteBatch, Transform,
@@ -104,19 +110,24 @@ impl App {
         }
     }
 
-    pub fn add_camera(&mut self, camera: Camera) -> usize {
-        self.cameras.push(camera);
-        self.cameras.len() - 1
-    }
     fn apply_commands(&mut self, mut cmds: Commands) {
-        for s in cmds.sprites_to_spawn.drain(..) {
-            let _ = self.pool.spawn(s);
-        }
-
         for (tex_id, p) in cmds.assets_to_load.drain(..) {
             if let Some(r) = &mut self.renderer {
                 let _ = r.load_texture_sync(tex_id, &p);
             }
+        }
+        for (id, mut s) in cmds.sprites_to_spawn.drain(..) {
+            if let Some(renderer) = &mut self.renderer {
+                let meta = renderer.texture_meta(s.tex);
+                if let Some(meta) = meta {
+                    s.size = Some(Vec2::new(meta.w as f32, meta.h as f32));
+                }
+            }
+            self.pool.entities.insert(id, s);
+        }
+
+        for c in cmds.cameras_to_spawn.drain(..) {
+            self.cameras.push(c);
         }
 
         if let Some(target_type) = cmds.scene_switch.take() {
@@ -139,17 +150,25 @@ impl App {
     fn rebuild_batches(&mut self) {
         self.batches.clear();
         for s in self.pool.entities.values() {
+            let sz = s
+                .size
+                .map(|size| size * s.transform.scale)
+                .unwrap_or(Vec2::ONE);
+
+            let instance = SpriteInstance {
+                pos_size: [
+                    s.transform.translation.x,
+                    s.transform.translation.y,
+                    sz.x,
+                    sz.y,
+                ],
+                uv: s.uv,
+            };
             match self.batches.iter_mut().find(|b| b.tex == s.tex) {
-                Some(b) => b.instances.push(SpriteInstance {
-                    pos_size: s.transform.into(),
-                    uv: s.uv,
-                }),
+                Some(b) => b.instances.push(instance),
                 None => self.batches.push(SpriteBatch {
                     tex: s.tex,
-                    instances: vec![SpriteInstance {
-                        pos_size: s.transform.into(),
-                        uv: s.uv,
-                    }],
+                    instances: vec![instance],
                 }),
             }
         }
@@ -167,7 +186,6 @@ impl ApplicationHandler for App {
         let win = event_loop
             .create_window(Window::default_attributes().with_title(&self.app_name))
             .unwrap();
-        info!("Creating renderer");
         let rend = Renderer::<DefaultBackend>::new(&self.app_name, &win)
             .expect("Failed to create renderer");
 
@@ -187,6 +205,7 @@ impl ApplicationHandler for App {
         _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
+        let win_size = self.win.as_ref().unwrap().inner_size();
         match event {
             WindowEvent::CloseRequested => {
                 info!("The close button was pressed; stopping");
@@ -211,6 +230,10 @@ impl ApplicationHandler for App {
                 self.dt = (now - self.prev).as_secs_f32();
                 self.prev = now;
 
+                if let Some(s) = self.resources.get_mut::<FpsStats>() {
+                    s.tick(self.dt);
+                }
+
                 if *self.active_scene == usize::MAX {
                     warn!("No active scene");
                     if let Some(r) = &mut self.renderer {
@@ -229,6 +252,7 @@ impl ApplicationHandler for App {
                             commands: &mut startup_cmds,
                             pool: &mut self.pool,
                             input: &self.input_state,
+                            screen_pos: Vec2::new(win_size.width as f32, win_size.height as f32),
                         };
                         slot.scene.start(&mut ctx);
                         slot.must_start = false;
@@ -240,6 +264,7 @@ impl ApplicationHandler for App {
                 {
                     let slot = &mut self.scenes[*self.active_scene];
                     let mut ctx = Ctx {
+                        screen_pos: Vec2::new(win_size.width as f32, win_size.height as f32),
                         dt: self.dt,
                         resources: &mut self.resources,
                         commands: &mut cmds,
@@ -272,6 +297,9 @@ impl ApplicationHandler for App {
                 self.win.as_ref().unwrap().request_redraw();
             }
             WindowEvent::Resized(size) => {
+                for c in &mut self.cameras {
+                    c.update_pixel_perfect(size.width as f32, size.height as f32);
+                }
                 let Some(r) = &mut self.renderer else { return };
                 r.handle_resize(size);
             }
