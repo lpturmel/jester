@@ -1,5 +1,3 @@
-use std::{any::TypeId, time::Instant};
-
 #[cfg(feature = "vulkan")]
 pub use b_vk::VkBackend as DefaultBackend;
 use glam::Vec2;
@@ -8,6 +6,7 @@ use jester_core::{
     Camera, Commands, Ctx, EntityPool, Error, InputState, Renderer, Resources, Scene, SceneKey,
     SpriteBatch, SpriteInstance,
 };
+use std::{any::TypeId, time::Instant};
 use tracing::{info, warn};
 use winit::{
     application::ApplicationHandler,
@@ -17,11 +16,17 @@ use winit::{
     window::Window,
 };
 
+use self::fps::FpsStats;
+
+mod fps;
 mod timer;
 
 pub mod prelude {
     pub use super::App;
-    pub use crate::timer::{Timer, TimerMode};
+    pub use crate::{
+        fps::FpsStats,
+        timer::{Timer, TimerMode},
+    };
     pub use glam::Vec2;
     pub use jester_core::{
         Backend, Camera, Commands, Ctx, EntityId, Renderer, Scene, Sprite, SpriteBatch, Transform,
@@ -113,10 +118,9 @@ impl App {
         }
         for (id, mut s) in cmds.sprites_to_spawn.drain(..) {
             if let Some(renderer) = &mut self.renderer {
-                if let Some(meta) = renderer.texture_meta(s.tex) {
-                    info!("Found texture meta for {:?}", s.tex);
-                    info!("New size: {:?}", meta);
-                    s.transform = s.transform.with_size(meta.w as f32, meta.h as f32);
+                let meta = renderer.texture_meta(s.tex);
+                if let Some(meta) = meta {
+                    s.size = Some(Vec2::new(meta.w as f32, meta.h as f32));
                 }
             }
             self.pool.entities.insert(id, s);
@@ -146,17 +150,25 @@ impl App {
     fn rebuild_batches(&mut self) {
         self.batches.clear();
         for s in self.pool.entities.values() {
+            let sz = s
+                .size
+                .map(|size| size * s.transform.scale)
+                .unwrap_or(Vec2::ONE);
+
+            let instance = SpriteInstance {
+                pos_size: [
+                    s.transform.translation.x,
+                    s.transform.translation.y,
+                    sz.x,
+                    sz.y,
+                ],
+                uv: s.uv,
+            };
             match self.batches.iter_mut().find(|b| b.tex == s.tex) {
-                Some(b) => b.instances.push(SpriteInstance {
-                    pos_size: s.transform.into(),
-                    uv: s.uv,
-                }),
+                Some(b) => b.instances.push(instance),
                 None => self.batches.push(SpriteBatch {
                     tex: s.tex,
-                    instances: vec![SpriteInstance {
-                        pos_size: s.transform.into(),
-                        uv: s.uv,
-                    }],
+                    instances: vec![instance],
                 }),
             }
         }
@@ -174,7 +186,6 @@ impl ApplicationHandler for App {
         let win = event_loop
             .create_window(Window::default_attributes().with_title(&self.app_name))
             .unwrap();
-        info!("Creating renderer");
         let rend = Renderer::<DefaultBackend>::new(&self.app_name, &win)
             .expect("Failed to create renderer");
 
@@ -218,6 +229,10 @@ impl ApplicationHandler for App {
                 let now = Instant::now();
                 self.dt = (now - self.prev).as_secs_f32();
                 self.prev = now;
+
+                if let Some(s) = self.resources.get_mut::<FpsStats>() {
+                    s.tick(self.dt);
+                }
 
                 if *self.active_scene == usize::MAX {
                     warn!("No active scene");

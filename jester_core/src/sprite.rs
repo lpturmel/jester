@@ -1,3 +1,5 @@
+use glam::Vec2;
+
 use crate::Transform;
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
@@ -51,6 +53,7 @@ pub struct SpriteBatch {
 #[derive(Debug, Clone, Copy)]
 pub struct Sprite {
     pub transform: Transform,
+    pub size: Option<Vec2>,
     pub uv: [f32; 4],
     pub tex: TextureId,
 }
@@ -58,6 +61,7 @@ pub struct Sprite {
 impl Default for Sprite {
     fn default() -> Self {
         Self {
+            size: None,
             transform: Transform::default(),
             uv: [0.0, 0.0, 1.0, 1.0],
             tex: TextureId(0),

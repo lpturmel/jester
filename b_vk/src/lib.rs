@@ -10,7 +10,6 @@ use jester_core::{
     Backend, Camera, SpriteBatch, SpriteInstance, MAX_SPRITES, MAX_TEXTURES, VERTEX_COUNT,
 };
 use std::ffi;
-use tracing::info;
 use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
@@ -132,7 +131,7 @@ impl VkBackend {
                 .iter()
                 .cloned()
                 .find(|m| *m == vk::PresentModeKHR::MAILBOX)
-                .unwrap_or(vk::PresentModeKHR::FIFO);
+                .unwrap_or(vk::PresentModeKHR::IMMEDIATE);
 
             let desired_image_count =
                 (caps.min_image_count + 1).min(caps.max_image_count.max(caps.min_image_count + 1));
@@ -869,7 +868,7 @@ impl Backend for VkBackend {
                 .iter()
                 .cloned()
                 .find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
-                .unwrap_or(vk::PresentModeKHR::FIFO);
+                .unwrap_or(vk::PresentModeKHR::IMMEDIATE);
             let swapchain_loader = swapchain::Device::new(&instance, &device);
 
             let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
@@ -1168,7 +1167,6 @@ impl Backend for VkBackend {
                 )
                 .map_err(|(_, e)| e)?[0];
 
-            info!("Destroying shader modules");
             device.destroy_shader_module(vert_mod, None);
             device.destroy_shader_module(frag_mod, None);
 

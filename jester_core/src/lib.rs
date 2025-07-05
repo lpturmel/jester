@@ -77,12 +77,13 @@ impl Transform {
             rotation: z,
         }
     }
-    pub fn with_size(mut self, w: f32, h: f32) -> Self {
-        self.scale = Vec2::new(w, h);
-        self
-    }
     pub fn with_rotation(mut self, angle: f32) -> Self {
         self.rotation = angle;
+        self
+    }
+
+    pub fn with_scale(mut self, scale: Vec2) -> Self {
+        self.scale = scale;
         self
     }
 }

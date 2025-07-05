@@ -4,6 +4,7 @@ use crate::{
 };
 use hashbrown::HashMap;
 use image::ImageResult;
+use tracing::info;
 use winit::window::Window;
 
 pub mod constants {
@@ -62,7 +63,8 @@ impl<B: Backend> Renderer<B> {
         &mut self.backend
     }
     pub fn texture_meta(&self, tex: TextureId) -> Option<TextureMeta> {
-        self.metadata.get(tex.0 as usize).and_then(|m| *m)
+        let slot = *self.lut.get(&tex)?;
+        self.metadata.get(slot).and_then(|m| *m)
     }
 
     pub fn load_texture_sync<P>(&mut self, tex_id: TextureId, path: P) -> ImageResult<()>
